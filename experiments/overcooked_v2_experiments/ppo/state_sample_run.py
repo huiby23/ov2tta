@@ -1,5 +1,6 @@
 from functools import partial
 import itertools
+import math
 from pathlib import Path
 from omegaconf import OmegaConf
 import wandb
@@ -10,7 +11,6 @@ import jax.numpy as jnp
 
 from overcooked_v2_experiments.eval.policy import PolicyPairing
 from overcooked_v2_experiments.eval.rollout import get_rollout
-from overcooked_v2_experiments.human_rl.imitation.bc_policy import BCPolicy
 from overcooked_v2_experiments.ppo.models.model import (
     get_actor_critic,
     initialize_carry,
@@ -58,13 +58,18 @@ def state_sample_run(config):
     model_name = config["model"]["TYPE"]
     layout_name = config["env"]["ENV_KWARGS"]["layout"]
     agent_view_size = config["env"]["ENV_KWARGS"].get("agent_view_size", None)
+    optional_prefix = config.get("OPTIONAL_PREFIX", "")
     avs_str = f"avs-{agent_view_size}" if agent_view_size is not None else "avs-full"
-    run_name = f"ippo_{model_name}_ov2_{layout_name}_{avs_str}"
+    run_name = f"ippo_{model_name}_ov2_{layout_name}_{avs_str}_sa-{num_iterations}"
+    if optional_prefix:
+        run_name = f"{optional_prefix}_{run_name}"
 
     num_runs = num_seeds
 
     hp_policy = None
     if "BC" in config:
+        from overcooked_v2_experiments.human_rl.imitation.bc_policy import BCPolicy
+
         print("Training with BC")
         split = "all"
         run_id = hp_indices[layout_name]
@@ -221,6 +226,7 @@ def state_sample_run(config):
                 key, subkey = jax.random.split(key)
 
                 comb_keys = jax.random.split(subkey, len(run_combinations))
+                num_collect_batches = math.gcd(len(run_combinations), 10)
 
                 # def _ppo_policy_combination_wrapper(params, key):
                 #     return __process_combination_wrapper(
@@ -236,7 +242,9 @@ def state_sample_run(config):
                     )
                 )
 
-                state_buffer = scanned_mini_batch_map(state_collect_jit, 10)(
+                state_buffer = scanned_mini_batch_map(
+                    state_collect_jit, num_collect_batches
+                )(
                     all_parings, comb_keys
                 )
                 state_buffer = combine_first_two_tree_dim(state_buffer)

@@ -9,9 +9,6 @@ import wandb
 
 from overcooked_v2_experiments.ppo.policy import PPOParams
 from overcooked_v2_experiments.ppo.utils.store import load_all_checkpoints, store_checkpoint
-from overcooked_v2_experiments.ppo.state_sample_run import state_sample_run
-from overcooked_v2_experiments.ppo.run import single_run
-from overcooked_v2_experiments.ppo.tune import tune
 from overcooked_v2_experiments.ppo.utils.utils import get_run_base_dir
 from overcooked_v2_experiments.ppo.utils.visualize_ppo import visualize_ppo_policy
 
@@ -23,16 +20,24 @@ jax.config.update("jax_debug_nans", True)
 
 
 def single_run_with_viz(config):
+    from overcooked_v2_experiments.ppo.run import single_run
+
     config = OmegaConf.to_container(config)
     num_checkpoints = config["NUM_CHECKPOINTS"]
     model_name = config["model"]["TYPE"]
     layout_name = config["env"]["ENV_KWARGS"]["layout"]
     agent_view_size = config["env"]["ENV_KWARGS"].get("agent_view_size", None)
+    optional_prefix = config.get("OPTIONAL_PREFIX", "")
     avs_str = f"avs-{agent_view_size}" if agent_view_size is not None else "avs-full"
     run_name = f"ippo_{model_name}_ov2_{layout_name}_{avs_str}"
     if "FCP" in config:
         population_dir = Path(config["FCP"])
         run_name = f"FCP_{population_dir.name}"
+    elif "NUM_ITERATIONS" in config:
+        run_name = f"{run_name}_sa-{config['NUM_ITERATIONS']}"
+
+    if optional_prefix:
+        run_name = f"{optional_prefix}_{run_name}"
 
 
     with wandb.init(
@@ -88,8 +93,12 @@ def main(config):
     print(config)
 
     if config["TUNE"]:
+        from overcooked_v2_experiments.ppo.tune import tune
+
         tune(config)
     elif "NUM_ITERATIONS" in config:
+        from overcooked_v2_experiments.ppo.state_sample_run import state_sample_run
+
         state_sample_run(config)
     else:
         single_run_with_viz(config)

@@ -27,8 +27,6 @@ def scanned_mini_batch_map(f, num_mini_batches, use_pmap=False, num_devices=None
 
         def _batched_fn(_, x):
             x_args, x_kwargs = x
-            print(f"Args: {x_args}")
-            print(f"Kwargs: {x_kwargs}")
             y = map_fn(f)(*x_args, **x_kwargs)
             return None, y
 

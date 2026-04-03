@@ -1073,7 +1073,9 @@ class OvercookedV2(MultiAgentEnv):
             new_pos_expanded = jnp.expand_dims(new_positions, axis=1)
 
             swap_mask = (original_pos_expanded == new_pos_expanded).all(axis=-1)
-            swap_mask = jnp.fill_diagonal(swap_mask, False, inplace=False)
+            swap_mask = jnp.logical_and(
+                swap_mask, ~jnp.eye(swap_mask.shape[0], dtype=jnp.bool_)
+            )
 
             swap_pairs = jnp.logical_and(swap_mask, swap_mask.T)
 
@@ -1129,7 +1131,7 @@ class OvercookedV2(MultiAgentEnv):
                 return jnp.array([cell[0], new_ingredients, new_extra])
 
             def _indicator(cell):
-                new_extra = jnp.clip(cell[2] - 1, min=0)
+                new_extra = jnp.clip(cell[2] - 1, a_min=0)
                 return cell.at[2].set(new_extra)
 
             # return jax.lax.cond(is_pot, _cook, lambda x: x, cell)
