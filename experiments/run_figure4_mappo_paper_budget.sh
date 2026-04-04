@@ -28,7 +28,7 @@ latest_run_dir() {
 }
 
 train_standard() {
-  PYTHONUNBUFFERED=1 MAPPO_SKIP_WANDB_FINISH=1 MAPPO_FORCE_OS_EXIT=1 CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES}" PYTHONPATH=experiments "$PYTHON_BIN" experiments/overcooked_v2_experiments/ppo/mappo_main.py \
+  PYTHONUNBUFFERED=1 MAPPO_SKIP_WANDB_FINISH=1 MAPPO_FORCE_OS_EXIT=1 CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES}" PYTHONPATH=experiments "$PYTHON_BIN" experiments/overcooked_v2_experiments/mappo/main.py \
     +experiment=rnn-sp \
     +env=original \
     env.ENV_KWARGS.layout="${LAYOUT}" \
@@ -48,7 +48,7 @@ train_standard() {
 
 evaluate_cross_play() {
   local run_dir="$1"
-  MAPPO_SKIP_WANDB_FINISH=1 MAPPO_FORCE_OS_EXIT=1 CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES}" PYTHONPATH=experiments "$PYTHON_BIN" experiments/overcooked_v2_experiments/ppo/utils/visualize_mappo.py \
+  MAPPO_SKIP_WANDB_FINISH=1 MAPPO_FORCE_OS_EXIT=1 CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES}" PYTHONPATH=experiments "$PYTHON_BIN" experiments/overcooked_v2_experiments/mappo/utils/visualize.py \
     --d "${run_dir}" \
     --cross \
     --num_seeds "${EVAL_SEEDS}" \

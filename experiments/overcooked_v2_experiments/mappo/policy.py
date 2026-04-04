@@ -6,8 +6,8 @@ import jax.numpy as jnp
 from flax import core
 
 from overcooked_v2_experiments.eval.policy import AbstractPolicy, PolicyPairing
-from overcooked_v2_experiments.ppo.models.abstract import ActorCriticBase
-from overcooked_v2_experiments.ppo.models.model import get_actor_critic, initialize_carry
+from overcooked_v2_experiments.mappo.models.abstract import ActorCriticBase
+from overcooked_v2_experiments.mappo.models.model import get_actor_critic, initialize_carry
 
 
 @chex.dataclass

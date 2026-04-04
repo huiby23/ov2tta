@@ -12,20 +12,20 @@ from omegaconf import OmegaConf
 
 from overcooked_v2_experiments.eval.policy import PolicyPairing
 from overcooked_v2_experiments.eval.rollout import get_rollout
-from overcooked_v2_experiments.ppo.mappo import make_train
-from overcooked_v2_experiments.ppo.mappo_policy import (
+from overcooked_v2_experiments.mappo.train import make_train
+from overcooked_v2_experiments.mappo.policy import (
     MAPPOParams,
     MAPPOPolicy,
     policy_checkoints_to_policy_pairing,
 )
-from overcooked_v2_experiments.ppo.models.model import get_actor_critic, initialize_carry
-from overcooked_v2_experiments.ppo.utils.store import store_checkpoint
-from overcooked_v2_experiments.ppo.utils.utils import (
+from overcooked_v2_experiments.mappo.models.model import get_actor_critic, initialize_carry
+from overcooked_v2_experiments.mappo.utils.store import store_checkpoint
+from overcooked_v2_experiments.mappo.utils.utils import (
     combine_first_two_tree_dim,
     get_num_devices,
     get_run_base_dir,
 )
-from overcooked_v2_experiments.ppo.utils.visualize_mappo import visualize_mappo_policy
+from overcooked_v2_experiments.mappo.utils.visualize import visualize_mappo_policy
 from overcooked_v2_experiments.utils.utils import scanned_mini_batch_map
 
 hp_indices = {

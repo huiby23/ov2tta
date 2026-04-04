@@ -40,7 +40,7 @@ latest_run_dir() {
 }
 
 train_standard() {
-  PYTHONPATH=experiments python experiments/overcooked_v2_experiments/ppo/mappo_main.py \
+  PYTHONPATH=experiments python experiments/overcooked_v2_experiments/mappo/main.py \
     +experiment=rnn-sp \
     +env=original \
     env.ENV_KWARGS.layout="${LAYOUT}" \
@@ -55,7 +55,7 @@ train_standard() {
 
 evaluate_cross_play() {
   local run_dir="$1"
-  PYTHONPATH=experiments python experiments/overcooked_v2_experiments/ppo/utils/visualize_mappo.py \
+  PYTHONPATH=experiments python experiments/overcooked_v2_experiments/mappo/utils/visualize.py \
     --d "${run_dir}" \
     --cross \
     --num_seeds "${EVAL_SEEDS}" \

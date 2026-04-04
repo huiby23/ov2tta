@@ -7,7 +7,7 @@ import jax
 import wandb
 from omegaconf import OmegaConf
 
-from overcooked_v2_experiments.ppo.utils.utils import get_run_base_dir
+from overcooked_v2_experiments.mappo.utils.utils import get_run_base_dir
 
 DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.append(os.path.dirname(DIR))
@@ -16,7 +16,7 @@ jax.config.update("jax_debug_nans", True)
 
 
 def _store_all_checkpoints(config, out, num_checkpoints):
-    from overcooked_v2_experiments.ppo.utils.store import store_checkpoint
+    from overcooked_v2_experiments.mappo.utils.store import store_checkpoint
 
     if num_checkpoints <= 0:
         return
@@ -40,7 +40,7 @@ def _store_all_checkpoints(config, out, num_checkpoints):
 
 def single_run_with_checkpoint(config):
     print("[MAPPO] single_run_with_checkpoint entry", flush=True)
-    from overcooked_v2_experiments.ppo.mappo_run import single_run
+    from overcooked_v2_experiments.mappo.run import single_run
 
     config = OmegaConf.to_container(config)
     if config["model"]["TYPE"] != "RNN":
@@ -98,7 +98,7 @@ def main(config):
     if config.get("TUNE", False):
         raise NotImplementedError("MAPPO tuning entry is not implemented yet.")
     if "NUM_ITERATIONS" in config:
-        from overcooked_v2_experiments.ppo.mappo_state_sample_run import state_sample_run
+        from overcooked_v2_experiments.mappo.state_sample_run import state_sample_run
 
         state_sample_run(config)
     else:

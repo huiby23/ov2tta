@@ -18,11 +18,11 @@ sys.path.append(os.path.dirname(os.path.dirname(DIR)))
 from overcooked_v2_experiments.eval.evaluate import eval_pairing
 from overcooked_v2_experiments.eval.policy import PolicyPairing
 from overcooked_v2_experiments.helper.plots import visualize_cross_play_matrix
-from overcooked_v2_experiments.ppo.mappo_policy import (
+from overcooked_v2_experiments.mappo.policy import (
     MAPPOParams,
     policy_checkoints_to_policy_pairing,
 )
-from overcooked_v2_experiments.ppo.utils.store import load_checkpoint
+from overcooked_v2_experiments.mappo.utils.store import load_checkpoint
 from overcooked_v2_experiments.utils.utils import mini_batch_pmap
 
 

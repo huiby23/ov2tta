@@ -5,14 +5,14 @@ from pathlib import Path
 import jax
 import jax.numpy as jnp
 
-from overcooked_v2_experiments.ppo.utils.utils import get_num_devices
+from overcooked_v2_experiments.mappo.utils.utils import get_num_devices
 from overcooked_v2_experiments.utils.utils import mini_batch_pmap
 
-from .mappo import make_train
+from .train import make_train
 
 
 def load_fcp_populations(population_dir):
-    from overcooked_v2_experiments.ppo.utils.store import load_all_checkpoints
+    from overcooked_v2_experiments.mappo.utils.store import load_all_checkpoints
     def _load_fcp_population(dir):
         all_checkpoints, fcp_config = load_all_checkpoints(
             dir, final_only=False, skip_initial=True
