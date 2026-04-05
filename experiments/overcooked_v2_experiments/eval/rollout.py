@@ -17,8 +17,6 @@ def init_rollout(policies: List[AbstractPolicy], env):
 
     assert len(policies) == num_agents
 
-    # print("Policy types", [type(p) for p in policies])
-
     init_hstate = {f"agent_{i}": policies[i].init_hstate(1) for i in range(num_agents)}
 
     @jax.jit
@@ -29,19 +27,11 @@ def init_rollout(policies: List[AbstractPolicy], env):
         next_hstates = {}
         for i, policy in enumerate(policies):
             agent_id = f"agent_{i}"
-
             obs_agent, done_agent, hstate_agent = (
                 obs[agent_id],
                 done[agent_id],
                 hstate[agent_id],
             )
-
-            # print("Agent ID", agent_id)
-            # print("Obs shape", obs_agent.shape)
-            # print("Done shape", done_agent.shape)
-            # if hstate_agent is not None:
-            #     print("Hstate shape", hstate_agent.shape)
-
             action, next_hstate = policy.compute_action(
                 obs_agent, done_agent, hstate_agent, sample_keys[i]
             )
@@ -63,14 +53,27 @@ def get_rollout(policies: PolicyPairing, env, key) -> PolicyRollout:
         key_sample, key_step = jax.random.split(key, 2)
         actions, next_hstate = _get_actions(obs, done, hstate, key_sample)
 
-        # STEP ENV
         next_obs, next_state, reward, next_done, info = env.step(
             key_step, state, actions
         )
 
+        if env.num_agents == 2:
+            updated_hstate = {}
+            for i, policy in enumerate(policies):
+                agent_id = f"agent_{i}"
+                partner_id = f"agent_{1 - i}"
+                updated_hstate[agent_id] = policy.update_after_step(
+                    next_hstate[agent_id],
+                    obs[partner_id],
+                    actions[partner_id],
+                    next_done[agent_id],
+                )
+        else:
+            updated_hstate = next_hstate
+
         new_total_reward = total_reward + reward["agent_0"]
 
-        carry = (next_obs, next_state, next_done, new_total_reward, next_hstate)
+        carry = (next_obs, next_state, next_done, new_total_reward, updated_hstate)
         return carry, (next_state, actions)
 
     key, key_r = jax.random.split(key, 2)

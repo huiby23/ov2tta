@@ -13,21 +13,14 @@ class AbstractPolicy(abc.ABC):
     def compute_action(self, obs, done, hstate, key) -> Tuple[int, chex.Array]:
         """
         Compute an action given an observation, done flag, hidden state, and random key.
-
-        Args:
-            obs (chex.Array): The observation.
-            done (chex.Array): The done flag.
-            hstate (chex.Array): The hidden state.
-            key (chex.Array): The random key.
-
-        Returns:
-            Tuple[int, chex.Array]: A tuple containing the action and the new hidden state.
         """
-
         pass
 
     def init_hstate(self, batch_size, key=None) -> chex.Array:
         return None
+
+    def update_after_step(self, hstate, partner_obs, partner_action, done):
+        return hstate
 
 
 @register_pytree_node_class
