@@ -92,14 +92,11 @@ def eval_pairing(
     all_recipes=False,
     no_viz=False,
 ):
-    assert (
-        not all_recipes and num_seeds > 1
-    ), "Only one of all_recipes and num_seeds can be set"
+    assert not (all_recipes and num_seeds is not None), "Only one of all_recipes and num_seeds can be set"
     assert "layout" not in env_kwargs, "Layout should be passed as layout_name"
 
     if all_recipes:
         layout = overcooked_v2_layouts[layout_name]
-        env_kwargs.pop("layout")
 
         possible_recipes = jnp.array(layout.possible_recipes)
 

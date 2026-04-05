@@ -1,0 +1,9 @@
+defaults:
+  - wandb: default
+  - model: ori
+
+SEED: 42
+NUM_SEEDS: 5
+TUNE: False
+NUM_CHECKPOINTS: 3
+VISUALIZE: False
