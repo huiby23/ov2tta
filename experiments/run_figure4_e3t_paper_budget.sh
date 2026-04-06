@@ -12,6 +12,8 @@ EVAL_SEEDS="${EVAL_SEEDS:-500}"
 LAYOUT="${LAYOUT:-counter_circuit}"
 WANDB_MODE="${WANDB_MODE:-offline}"
 CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-}"
+AUTO_SELECT_GPUS="${AUTO_SELECT_GPUS:-1}"
+GPU_BUSY_THRESHOLD_MB="${GPU_BUSY_THRESHOLD_MB:-1024}"
 PYTHON_BIN="${PYTHON_BIN:-/root/miniconda3/envs/myconda/bin/python}"
 STANDARD_PREFIX="${STANDARD_PREFIX:-figure4_e3t_paper_budget}"
 TOTAL_TIMESTEPS="${TOTAL_TIMESTEPS:-10000000}"
@@ -20,6 +22,50 @@ MODEL_NUM_ENVS="${MODEL_NUM_ENVS:-64}"
 MODEL_NUM_STEPS="${MODEL_NUM_STEPS:-256}"
 MODEL_NUM_MINIBATCHES="${MODEL_NUM_MINIBATCHES:-16}"
 MODEL_UPDATE_EPOCHS="${MODEL_UPDATE_EPOCHS:-4}"
+
+select_available_gpus() {
+  if ! command -v nvidia-smi >/dev/null 2>&1; then
+    return 1
+  fi
+
+  local line idx used
+  local -a free_gpus=()
+  local least_used_idx=""
+  local least_used_mem=999999
+
+  while IFS=, read -r idx used; do
+    idx="${idx// /}"
+    used="${used// /}"
+    [[ -z "${idx}" || -z "${used}" ]] && continue
+    if (( used <= GPU_BUSY_THRESHOLD_MB )); then
+      free_gpus+=("${idx}")
+    fi
+    if (( used < least_used_mem )); then
+      least_used_mem="${used}"
+      least_used_idx="${idx}"
+    fi
+  done < <(nvidia-smi --query-gpu=index,memory.used --format=csv,noheader,nounits)
+
+  if (( ${#free_gpus[@]} > 0 )); then
+    local IFS=,
+    echo "${free_gpus[*]}"
+    return 0
+  fi
+
+  if [[ -n "${least_used_idx}" ]]; then
+    echo "${least_used_idx}"
+    return 0
+  fi
+
+  return 1
+}
+
+if [[ -z "${CUDA_VISIBLE_DEVICES}" && "${AUTO_SELECT_GPUS}" == "1" ]]; then
+  if CUDA_VISIBLE_DEVICES="$(select_available_gpus)"; then
+    export CUDA_VISIBLE_DEVICES
+    echo "[Figure4-E3T-PaperBudget] Auto-selected GPUs: ${CUDA_VISIBLE_DEVICES}"
+  fi
+fi
 
 latest_run_dir() {
   local prefix="$1"

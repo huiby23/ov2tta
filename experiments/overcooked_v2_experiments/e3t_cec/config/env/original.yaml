@@ -1,0 +1,5 @@
+"ENV_NAME": "overcooked_v2"
+"ENV_KWARGS":
+  "layout": "cramped_room"
+  "max_steps": 100
+  "random_reset": False

@@ -55,9 +55,15 @@ def _partner_obs_batch(last_obs, env, obs_shape):
     return jnp.stack([partner_obs[a] for a in env.agents]).reshape((-1,) + obs_shape)
 
 
-def _update_history_buffers(history_obs, history_actions, partner_obs, partner_action, done_all_batch, pad_action):
+def _bootstrap_history(obs_batch, context_length, stay_action):
+    history_obs = jnp.repeat(obs_batch[:, None, ...], context_length, axis=1)
+    history_actions = jnp.full((obs_batch.shape[0], context_length), stay_action, dtype=jnp.int32)
+    return history_obs, history_actions
+
+
+def _update_history_buffers(history_obs, history_actions, ego_obs, partner_action, done_all_batch, stay_action):
     next_history_obs = jnp.concatenate(
-        [history_obs[:, 1:], partner_obs[:, None, ...].astype(history_obs.dtype)],
+        [history_obs[:, 1:], ego_obs[:, None, ...].astype(history_obs.dtype)],
         axis=1,
     )
     next_history_actions = jnp.concatenate(
@@ -66,8 +72,11 @@ def _update_history_buffers(history_obs, history_actions, partner_obs, partner_a
     )
     done_obs_mask = done_all_batch.reshape((done_all_batch.shape[0],) + (1,) * (next_history_obs.ndim - 1))
     done_act_mask = done_all_batch[:, None]
-    reset_obs = jnp.zeros_like(next_history_obs)
-    reset_actions = jnp.full_like(next_history_actions, pad_action)
+    reset_obs, reset_actions = _bootstrap_history(
+        ego_obs.astype(next_history_obs.dtype),
+        next_history_obs.shape[1],
+        stay_action,
+    )
     next_history_obs = jnp.where(done_obs_mask, reset_obs, next_history_obs)
     next_history_actions = jnp.where(done_act_mask, reset_actions, next_history_actions)
     return next_history_obs, next_history_actions
@@ -86,7 +95,8 @@ def make_train(config, update_step_offset=None, update_step_num_overwrite=None, 
         raise NotImplementedError("Current E3T implementation assumes two-player coordination.")
 
     obs_shape = env.observation_space().shape
-    pad_action = env.action_space(env.agents[0]).n
+    action_dim = env.action_space(env.agents[0]).n
+    stay_action = min(4, action_dim - 1)
     context_length = model_config.get("CONTEXT_LENGTH", 5)
     env_shard_mode = config.get("ENV_SHARD_ACROSS_DEVICES", False)
     env_shard_axis_name = config.get("ENV_SHARD_AXIS_NAME", "env_shard")
@@ -140,6 +150,9 @@ def make_train(config, update_step_offset=None, update_step_num_overwrite=None, 
         transition_steps=model_config["REW_SHAPING_HORIZON"],
     )
 
+    separate_context_update = model_config.get("SEPARATE_CONTEXT_UPDATE", True)
+    context_update_epochs = model_config.get("CONTEXT_UPDATE_EPOCHS", model_config["UPDATE_EPOCHS"])
+
     def train(rng, population=None, initial_train_state=None):
         if population is not None:
             raise NotImplementedError("E3T does not use external partner populations.")
@@ -151,7 +164,7 @@ def make_train(config, update_step_offset=None, update_step_num_overwrite=None, 
             jnp.zeros((1, model_config["NUM_ENVS"], *obs_shape), dtype=jnp.float32),
             jnp.zeros((1, model_config["NUM_ENVS"]), dtype=jnp.bool_),
             jnp.zeros((1, model_config["NUM_ENVS"], context_length, *obs_shape), dtype=jnp.float32),
-            jnp.full((1, model_config["NUM_ENVS"], context_length), pad_action, dtype=jnp.int32),
+            jnp.full((1, model_config["NUM_ENVS"], context_length), stay_action, dtype=jnp.int32),
         )
         init_hstate = initialize_carry(config, model_config["NUM_ENVS"])
         network_params = network.init(_rng, init_hstate, init_x)
@@ -175,8 +188,12 @@ def make_train(config, update_step_offset=None, update_step_num_overwrite=None, 
         reset_rng = jax.random.split(_rng, model_config["NUM_ENVS"])
         obsv, env_state = jax.vmap(env.reset)(reset_rng)
         init_hstate = initialize_carry(config, model_config["NUM_ACTORS"])
-        init_history_obs = jnp.zeros((model_config["NUM_ACTORS"], context_length, *obs_shape), dtype=jnp.float16)
-        init_history_actions = jnp.full((model_config["NUM_ACTORS"], context_length), pad_action, dtype=jnp.int32)
+        init_obs_batch = jnp.stack([obsv[a] for a in env.agents]).reshape((-1,) + obs_shape)
+        init_history_obs, init_history_actions = _bootstrap_history(
+            init_obs_batch.astype(jnp.float32),
+            context_length,
+            stay_action,
+        )
 
         def _sample_partner_agent_idxs(rng_key):
             return jax.random.randint(rng_key, (model_config["NUM_ENVS"],), 0, env.num_agents)
@@ -242,8 +259,6 @@ def make_train(config, update_step_offset=None, update_step_num_overwrite=None, 
                     env.agents[1]: env_act[env.agents[0]],
                 }
                 other_action = batchify(other_env_act, env.agents, model_config["NUM_ACTORS"]).squeeze()
-                partner_obs = _partner_obs_batch(last_obs, env, obs_shape)
-
                 rng, _rng = jax.random.split(rng)
                 rng_step = jax.random.split(_rng, model_config["NUM_ENVS"])
                 obsv, env_state, reward, done, info = jax.vmap(
@@ -270,10 +285,10 @@ def make_train(config, update_step_offset=None, update_step_num_overwrite=None, 
                 next_history_obs, next_history_actions = _update_history_buffers(
                     history_obs,
                     history_actions,
-                    partner_obs,
+                    obs_batch,
                     other_action,
                     done_all_batch,
-                    pad_action,
+                    stay_action,
                 )
 
                 transition = Transition(
@@ -358,58 +373,91 @@ def make_train(config, update_step_offset=None, update_step_num_overwrite=None, 
 
             advantages, targets = _calculate_gae(traj_batch, last_val)
 
-            def _update_epoch(update_state, unused):
-                def _update_minbatch(train_state, batch_info):
-                    init_hstate, traj_batch, advantages, targets = batch_info
+            def _update_epoch(update_state, epoch_idx):
+                def _context_loss_fn(params, init_hstate, traj_batch):
+                    hstate = init_hstate.squeeze(axis=0) if init_hstate is not None else None
+                    train_mask = jax.lax.stop_gradient(traj_batch.train_mask)
+                    _, _, _, other_pi = network.apply(
+                        params,
+                        hstate,
+                        (
+                            traj_batch.obs,
+                            traj_batch.done,
+                            traj_batch.hist_obs.astype(traj_batch.obs.dtype),
+                            traj_batch.hist_action,
+                        ),
+                    )
+                    other_log_prob = other_pi.log_prob(traj_batch.other_action)
+                    return (-other_log_prob).mean(where=train_mask)
 
-                    def _loss_fn(params, init_hstate, traj_batch, gae, targets):
-                        hstate = init_hstate.squeeze(axis=0) if init_hstate is not None else None
-                        train_mask = jax.lax.stop_gradient(traj_batch.train_mask)
+                def _ppo_loss_fn(params, init_hstate, traj_batch, gae, targets):
+                    hstate = init_hstate.squeeze(axis=0) if init_hstate is not None else None
+                    train_mask = jax.lax.stop_gradient(traj_batch.train_mask)
 
-                        _, pi, value, other_pi = network.apply(
-                            params,
-                            hstate,
-                            (
-                                traj_batch.obs,
-                                traj_batch.done,
-                                traj_batch.hist_obs.astype(traj_batch.obs.dtype),
-                                traj_batch.hist_action,
-                            ),
-                        )
-                        log_prob = pi.log_prob(traj_batch.action)
-                        other_log_prob = other_pi.log_prob(traj_batch.other_action)
-                        moa_loss = (-other_log_prob).mean(where=train_mask)
+                    _, pi, value, other_pi = network.apply(
+                        params,
+                        hstate,
+                        (
+                            traj_batch.obs,
+                            traj_batch.done,
+                            traj_batch.hist_obs.astype(traj_batch.obs.dtype),
+                            traj_batch.hist_action,
+                        ),
+                    )
+                    log_prob = pi.log_prob(traj_batch.action)
+                    other_log_prob = other_pi.log_prob(traj_batch.other_action)
+                    context_loss = (-other_log_prob).mean(where=train_mask)
 
-                        value_pred_clipped = traj_batch.value + (value - traj_batch.value).clip(
-                            -model_config["CLIP_EPS"], model_config["CLIP_EPS"]
-                        )
-                        value_losses = jnp.square(value - targets)
-                        value_losses_clipped = jnp.square(value_pred_clipped - targets)
-                        value_loss = 0.5 * jnp.maximum(value_losses, value_losses_clipped).mean(where=train_mask)
+                    value_pred_clipped = traj_batch.value + (value - traj_batch.value).clip(
+                        -model_config["CLIP_EPS"], model_config["CLIP_EPS"]
+                    )
+                    value_losses = jnp.square(value - targets)
+                    value_losses_clipped = jnp.square(value_pred_clipped - targets)
+                    value_loss = 0.5 * jnp.maximum(value_losses, value_losses_clipped).mean(where=train_mask)
 
-                        ratio = jnp.exp(log_prob - traj_batch.log_prob)
-                        gae = (gae - gae.mean(where=train_mask)) / (gae.std(where=train_mask) + 1e-8)
-                        loss_actor1 = ratio * gae
-                        loss_actor2 = jnp.clip(
-                            ratio,
-                            1.0 - model_config["CLIP_EPS"],
-                            1.0 + model_config["CLIP_EPS"],
-                        ) * gae
-                        loss_actor = -jnp.minimum(loss_actor1, loss_actor2)
-                        loss_actor = loss_actor.mean(where=train_mask)
-                        entropy = pi.entropy().mean(where=train_mask)
-                        ratio_mean = ratio.mean(where=train_mask)
+                    ratio = jnp.exp(log_prob - traj_batch.log_prob)
+                    gae = (gae - gae.mean(where=train_mask)) / (gae.std(where=train_mask) + 1e-8)
+                    loss_actor1 = ratio * gae
+                    loss_actor2 = jnp.clip(
+                        ratio,
+                        1.0 - model_config["CLIP_EPS"],
+                        1.0 + model_config["CLIP_EPS"],
+                    ) * gae
+                    loss_actor = -jnp.minimum(loss_actor1, loss_actor2)
+                    loss_actor = loss_actor.mean(where=train_mask)
+                    entropy = pi.entropy().mean(where=train_mask)
+                    ratio_mean = ratio.mean(where=train_mask)
 
-                        total_loss = (
-                            loss_actor
-                            + model_config["MOA_COEF"] * moa_loss
-                            + model_config["VF_COEF"] * value_loss
-                            - model_config["ENT_COEF"] * entropy
-                        )
-                        return total_loss, (value_loss, loss_actor, entropy, ratio_mean, moa_loss)
+                    total_loss = (
+                        loss_actor
+                        + model_config["VF_COEF"] * value_loss
+                        - model_config["ENT_COEF"] * entropy
+                    )
+                    if not separate_context_update:
+                        total_loss = total_loss + model_config["MOA_COEF"] * context_loss
+                    return total_loss, (value_loss, loss_actor, entropy, ratio_mean, context_loss)
+
+                def _context_update_minbatch(train_state, batch_info):
+                    init_hstate, traj_batch = batch_info
 
                     def _perform_update():
-                        grad_fn = jax.value_and_grad(_loss_fn, has_aux=True)
+                        grad_fn = jax.value_and_grad(_context_loss_fn)
+                        context_loss, grads = grad_fn(train_state.params, init_hstate, traj_batch)
+                        if env_shard_mode:
+                            grads = jax.lax.pmean(grads, axis_name=env_shard_axis_name)
+                            context_loss = jax.lax.pmean(context_loss, axis_name=env_shard_axis_name)
+                        return train_state.apply_gradients(grads=grads), context_loss
+
+                    def _no_op():
+                        return train_state, 0.0
+
+                    return jax.lax.cond(traj_batch.train_mask.any(), _perform_update, _no_op)
+
+                def _ppo_update_minbatch(train_state, batch_info):
+                    init_hstate, traj_batch, advantages, targets = batch_info
+
+                    def _perform_update():
+                        grad_fn = jax.value_and_grad(_ppo_loss_fn, has_aux=True)
                         total_loss, grads = grad_fn(train_state.params, init_hstate, traj_batch, advantages, targets)
                         if env_shard_mode:
                             grads = jax.lax.pmean(grads, axis_name=env_shard_axis_name)
@@ -439,16 +487,49 @@ def make_train(config, update_step_offset=None, update_step_num_overwrite=None, 
                     ),
                     shuffled_batch,
                 )
-                train_state, total_loss = jax.lax.scan(_update_minbatch, train_state, minibatches)
-                return (train_state, init_hstate, traj_batch, advantages, targets, rng), total_loss
+                run_context_epoch = separate_context_update and (epoch_idx < context_update_epochs)
+                run_ppo_epoch = epoch_idx < model_config["UPDATE_EPOCHS"]
+
+                def _run_context(train_state):
+                    context_minibatches = (minibatches[0], minibatches[1])
+                    return jax.lax.scan(_context_update_minbatch, train_state, context_minibatches)
+
+                def _skip_context(train_state):
+                    losses = jnp.zeros((model_config["NUM_MINIBATCHES"],), dtype=jnp.float32)
+                    return train_state, losses
+
+                train_state, context_losses = jax.lax.cond(
+                    run_context_epoch,
+                    _run_context,
+                    _skip_context,
+                    train_state,
+                )
+
+                def _run_ppo(train_state):
+                    return jax.lax.scan(_ppo_update_minbatch, train_state, minibatches)
+
+                def _skip_ppo(train_state):
+                    zeros = (
+                        jnp.zeros((model_config["NUM_MINIBATCHES"],), dtype=jnp.float32),
+                        tuple(
+                            jnp.zeros((model_config["NUM_MINIBATCHES"],), dtype=jnp.float32)
+                            for _ in range(5)
+                        ),
+                    )
+                    return train_state, zeros
+
+                train_state, ppo_loss = jax.lax.cond(run_ppo_epoch, _run_ppo, _skip_ppo, train_state)
+                return (train_state, init_hstate, traj_batch, advantages, targets, rng), (ppo_loss, context_losses)
 
             rng, _rng = jax.random.split(rng)
             update_state = (train_state, initial_hstate, traj_batch, advantages, targets, _rng)
-            update_state, loss_info = jax.lax.scan(_update_epoch, update_state, None, model_config["UPDATE_EPOCHS"])
+            total_update_epochs = max(model_config["UPDATE_EPOCHS"], context_update_epochs)
+            update_state, loss_info = jax.lax.scan(_update_epoch, update_state, jnp.arange(total_update_epochs))
             train_state = update_state[0]
             metric = traj_batch.info
 
-            total_loss, aux_data = loss_info
+            ppo_loss_info, context_loss_info = loss_info
+            total_loss, aux_data = ppo_loss_info
             value_loss, loss_actor, entropy, ratio, moa_loss = aux_data
             metric["total_loss"] = total_loss
             metric["value_loss"] = value_loss
@@ -456,6 +537,7 @@ def make_train(config, update_step_offset=None, update_step_num_overwrite=None, 
             metric["entropy"] = entropy
             metric["ratio"] = ratio
             metric["moa_loss"] = moa_loss
+            metric["context_loss"] = context_loss_info
             metric = jax.tree_util.tree_map(lambda x: x.mean(), metric)
             if env_shard_mode:
                 metric = jax.lax.pmean(metric, axis_name=env_shard_axis_name)

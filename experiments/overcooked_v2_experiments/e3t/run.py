@@ -86,9 +86,18 @@ def single_run(config):
 
     with jax.disable_jit(False):
         rng = jax.random.PRNGKey(config["SEED"])
+        auto_env_shard = config.get("AUTO_ENV_SHARD_SINGLE_SEED", True)
+        visible_devices = get_num_devices()
         env_shard = config.get("ENV_SHARD_ACROSS_DEVICES", False)
+        if (
+            not env_shard
+            and auto_env_shard
+            and config["NUM_SEEDS"] == 1
+            and visible_devices > 1
+        ):
+            env_shard = True
         if env_shard:
             if config["NUM_SEEDS"] != 1:
                 raise NotImplementedError("ENV_SHARD_ACROSS_DEVICES currently supports NUM_SEEDS=1 only.")
-            return _run_env_sharded(config, rng, get_num_devices())
+            return _run_env_sharded(config, rng, visible_devices)
         return _run_seed_batched(config, rng)

@@ -39,7 +39,6 @@ class ActorCriticRNN(ActorCriticBase):
         obs, dones, history_obs, history_actions = x
         activation = nn.relu if self.config["ACTIVATION"] == "relu" else nn.tanh
         context_hidden_dim = self.config.get("CONTEXT_HIDDEN_DIM", self.config.get("PREDICTOR_HIDDEN_DIM", 64))
-        pad_action = self.action_dim
 
         embed_model = CNN(
             output_size=self.config["GRU_HIDDEN_DIM"],
@@ -57,8 +56,8 @@ class ActorCriticRNN(ActorCriticBase):
         history_embedding = history_embedding.reshape(history_obs.shape[:3] + (-1,))
         history_embedding = nn.LayerNorm()(history_embedding)
 
-        clipped_history_actions = jnp.clip(history_actions, 0, pad_action)
-        history_action_oh = jax.nn.one_hot(clipped_history_actions, pad_action + 1)
+        clipped_history_actions = jnp.clip(history_actions, 0, self.action_dim - 1)
+        history_action_oh = jax.nn.one_hot(clipped_history_actions, self.action_dim)
         history_features = jnp.concatenate([history_embedding, history_action_oh], axis=-1)
         history_features = nn.Dense(
             context_hidden_dim,
@@ -73,9 +72,7 @@ class ActorCriticRNN(ActorCriticBase):
         )(history_features)
         history_features = nn.leaky_relu(history_features)
 
-        history_valid = (history_actions != pad_action)[..., None]
-        history_count = jnp.maximum(history_valid.sum(axis=2), 1)
-        context_embedding = (history_features * history_valid).sum(axis=2) / history_count
+        context_embedding = history_features.mean(axis=2)
         context_embedding = nn.LayerNorm()(context_embedding)
 
         rnn_in = (obs_embedding, dones)

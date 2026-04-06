@@ -15,7 +15,7 @@ CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-}"
 PYTHON_BIN="${PYTHON_BIN:-/root/miniconda3/envs/myconda/bin/python}"
 STANDARD_PREFIX="${STANDARD_PREFIX:-figure4_e3t_cec_budget}"
 TOTAL_TIMESTEPS="${TOTAL_TIMESTEPS:-100000000}"
-REW_SHAPING_HORIZON="${REW_SHAPING_HORIZON:-50000000}"
+MAX_TRAIN_STEPS="${MAX_TRAIN_STEPS:-3000000000}"
 MODEL_NUM_ENVS="${MODEL_NUM_ENVS:-512}"
 MODEL_NUM_STEPS="${MODEL_NUM_STEPS:-100}"
 MODEL_NUM_MINIBATCHES="${MODEL_NUM_MINIBATCHES:-2}"
@@ -27,11 +27,11 @@ latest_run_dir() {
 }
 
 train_standard() {
-  local -a env_prefix=(PYTHONUNBUFFERED=1 E3T_SKIP_WANDB_FINISH=1 E3T_FORCE_OS_EXIT=1 PYTHONPATH=experiments)
+  local -a env_prefix=(PYTHONUNBUFFERED=1 E3T_CEC_SKIP_WANDB_FINISH=1 E3T_CEC_FORCE_OS_EXIT=1 PYTHONPATH=experiments)
   if [[ -n "${CUDA_VISIBLE_DEVICES}" ]]; then
     env_prefix+=(CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES}")
   fi
-  env "${env_prefix[@]}" "$PYTHON_BIN" experiments/overcooked_v2_experiments/e3t/main.py \
+  env "${env_prefix[@]}" "$PYTHON_BIN" experiments/overcooked_v2_experiments/e3t_cec/main.py \
     +experiment=rnn-sp \
     +env=original \
     env.ENV_KWARGS.layout="${LAYOUT}" \
@@ -42,7 +42,7 @@ train_standard() {
     wandb.PROJECT="${PROJECT}" \
     wandb.WANDB_MODE="${WANDB_MODE}" \
     model.TOTAL_TIMESTEPS="${TOTAL_TIMESTEPS}" \
-    model.REW_SHAPING_HORIZON="${REW_SHAPING_HORIZON}" \
+    model.MAX_TRAIN_STEPS="${MAX_TRAIN_STEPS}" \
     model.NUM_ENVS="${MODEL_NUM_ENVS}" \
     model.NUM_STEPS="${MODEL_NUM_STEPS}" \
     model.NUM_MINIBATCHES="${MODEL_NUM_MINIBATCHES}" \
@@ -51,11 +51,11 @@ train_standard() {
 
 evaluate_cross_play() {
   local run_dir="$1"
-  local -a env_prefix=(E3T_SKIP_WANDB_FINISH=1 E3T_FORCE_OS_EXIT=1 PYTHONPATH=experiments)
+  local -a env_prefix=(E3T_CEC_SKIP_WANDB_FINISH=1 E3T_CEC_FORCE_OS_EXIT=1 PYTHONPATH=experiments)
   if [[ -n "${CUDA_VISIBLE_DEVICES}" ]]; then
     env_prefix+=(CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES}")
   fi
-  env "${env_prefix[@]}" "$PYTHON_BIN" experiments/overcooked_v2_experiments/e3t/utils/visualize.py \
+  env "${env_prefix[@]}" "$PYTHON_BIN" experiments/overcooked_v2_experiments/e3t_cec/utils/visualize.py \
     --d "${run_dir}" \
     --cross \
     --num_seeds "${EVAL_SEEDS}" \
