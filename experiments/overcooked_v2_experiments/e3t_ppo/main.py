@@ -41,8 +41,6 @@ def single_run_with_checkpoint(config):
     from overcooked_v2_experiments.e3t_ppo.run import single_run
 
     config = OmegaConf.to_container(config)
-    if config["model"]["TYPE"] != "RNN":
-        raise NotImplementedError("E3T-PPO currently supports only the RNN model.")
     if config.get("TUNE", False):
         raise NotImplementedError("E3T-PPO tuning is not implemented.")
     if "NUM_ITERATIONS" in config:
