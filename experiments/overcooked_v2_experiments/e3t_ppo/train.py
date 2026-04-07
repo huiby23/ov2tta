@@ -6,7 +6,9 @@ import jax.numpy as jnp
 import jaxmarl
 import optax
 import wandb
+from flax import core
 from flax.training.train_state import TrainState
+from flax.traverse_util import flatten_dict, unflatten_dict
 from jaxmarl.wrappers.baselines import OvercookedV2LogWrapper
 
 from overcooked_v2_experiments.e3t_ppo.models.model import (
@@ -130,6 +132,69 @@ def _take_axis1(x, indices):
     return jnp.take(x, indices, axis=1)
 
 
+def _build_official_param_masks(params, model_config):
+    model_type = model_config["TYPE"]
+
+    if model_type != "CNN":
+        ones_mask = jax.tree_util.tree_map(lambda _: True, params)
+        zeros_mask = jax.tree_util.tree_map(lambda _: False, params)
+        return ones_mask, zeros_mask
+
+    flat_params = flatten_dict(params)
+    context_tokens = (
+        "context_encoder",
+        "context_obs_ln",
+        "context_hist_ln",
+        "context_proj_",
+        "context_ln",
+        "predictor_",
+    )
+    ppo_tokens = (
+        "policy_encoder",
+        "policy_ln",
+        "actor_",
+        "critic_",
+    )
+
+    ppo_flat = {}
+    context_flat = {}
+    unmatched = []
+    overlap = []
+    for key in flat_params:
+        path = "/".join(key)
+        is_context = any(token in path for token in context_tokens)
+        is_ppo = any(token in path for token in ppo_tokens)
+        if is_context and is_ppo:
+            overlap.append(path)
+        if not is_context and not is_ppo:
+            unmatched.append(path)
+        ppo_flat[key] = is_ppo
+        context_flat[key] = is_context
+
+    if overlap:
+        raise ValueError(f"Overlapping PPO/context params: {overlap}")
+    if unmatched:
+        raise ValueError(f"Unmatched params for official split: {unmatched}")
+
+    return (
+        core.freeze(unflatten_dict(ppo_flat)),
+        core.freeze(unflatten_dict(context_flat)),
+    )
+
+
+def _mask_grads(grads, mask):
+    grads_is_frozen = isinstance(grads, core.FrozenDict)
+    mask_is_frozen = isinstance(mask, core.FrozenDict)
+    grads_tree = core.unfreeze(grads) if grads_is_frozen else grads
+    mask_tree = core.unfreeze(mask) if mask_is_frozen else mask
+    masked = jax.tree_util.tree_map(
+        lambda g, m: g if m else jnp.zeros_like(g),
+        grads_tree,
+        mask_tree,
+    )
+    return core.freeze(masked) if grads_is_frozen else masked
+
+
 def make_train(
     config,
     update_step_offset=None,
@@ -160,6 +225,7 @@ def make_train(
     context_update_epochs = int(
         model_config.get("CONTEXT_UPDATE_EPOCHS", model_config["UPDATE_EPOCHS"])
     )
+    official_param_split = model_config.get("OFFICIAL_SEPARATE_PARAM_SPLIT", True)
     moa_warmup_updates = int(model_config.get("MOA_WARMUP_UPDATES", 0))
     mix_warmup_updates = int(model_config.get("MIX_WARMUP_UPDATES", 0))
 
@@ -277,6 +343,12 @@ def make_train(
         )
         if initial_train_state is not None:
             train_state = initial_train_state
+
+        ppo_param_mask, context_param_mask = _build_official_param_masks(
+            train_state.params,
+            model_config,
+        )
+        use_official_param_split = separate_moa_update and official_param_split
 
         rng, _rng = jax.random.split(rng)
         reset_rng = jax.random.split(_rng, model_config["NUM_ENVS"])
@@ -703,6 +775,8 @@ def make_train(
                             init_hstate,
                             traj_batch,
                         )
+                        if use_official_param_split:
+                            grads = _mask_grads(grads, context_param_mask)
                         grad_norm = optax.global_norm(grads)
                         return (
                             train_state.apply_gradients(grads=grads),
@@ -728,6 +802,8 @@ def make_train(
                             gae,
                             targets,
                         )
+                        if use_official_param_split:
+                            grads = _mask_grads(grads, ppo_param_mask)
                         grad_norm = optax.global_norm(grads)
                         return train_state.apply_gradients(grads=grads), (
                             total_loss,
