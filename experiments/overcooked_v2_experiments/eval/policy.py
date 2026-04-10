@@ -23,6 +23,18 @@ class AbstractPolicy(abc.ABC):
         return hstate
 
 
+@struct.dataclass
+class FunctionalPolicyState:
+    value: chex.ArrayTree
+
+
+@struct.dataclass
+class FunctionalPolicyPairing:
+    policies: Tuple[chex.ArrayTree, ...]
+    backend: str = struct.field(pytree_node=False, default="")
+    config: dict = struct.field(pytree_node=False, default_factory=dict)
+
+
 @register_pytree_node_class
 class PolicyPairing:
     policies: List[AbstractPolicy]

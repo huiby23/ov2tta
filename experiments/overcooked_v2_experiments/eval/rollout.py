@@ -2,7 +2,7 @@ from typing import List
 import jax
 import jax.numpy as jnp
 import chex
-from .policy import AbstractPolicy, PolicyPairing
+from .policy import AbstractPolicy, PolicyPairing, FunctionalPolicyPairing
 
 
 @chex.dataclass
@@ -97,3 +97,18 @@ def get_rollout(policies: PolicyPairing, env, key) -> PolicyRollout:
     return PolicyRollout(
         state_seq=state_seq, actions_seq=actions_seq, total_reward=total_reward
     )
+
+
+def get_rollout_functional(policies: FunctionalPolicyPairing, env, key) -> PolicyRollout:
+    if policies.backend == "ttappo":
+        from overcooked_v2_experiments.ttappo.policy import get_functional_rollout
+
+        return get_functional_rollout(policies, env, key)
+    if policies.backend == "ttappo_v2_temporal":
+        from overcooked_v2_experiments.ttappo_v2_temporal.policy import (
+            get_functional_rollout,
+        )
+
+        return get_functional_rollout(policies, env, key)
+
+    raise NotImplementedError(f"Unknown functional backend: {policies.backend}")
