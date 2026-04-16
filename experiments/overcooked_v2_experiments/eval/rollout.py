@@ -104,8 +104,20 @@ def get_rollout_functional(policies: FunctionalPolicyPairing, env, key) -> Polic
         from overcooked_v2_experiments.ttappo.policy import get_functional_rollout
 
         return get_functional_rollout(policies, env, key)
+    if policies.backend == "ttappo_v2_1":
+        from overcooked_v2_experiments.ttappo_v2_1.policy import (
+            get_functional_rollout,
+        )
+
+        return get_functional_rollout(policies, env, key)
     if policies.backend == "ttappo_v2_temporal":
         from overcooked_v2_experiments.ttappo_v2_temporal.policy import (
+            get_functional_rollout,
+        )
+
+        return get_functional_rollout(policies, env, key)
+    if policies.backend == "ttappo_v3_memory":
+        from overcooked_v2_experiments.ttappo_v3_memory.policy import (
             get_functional_rollout,
         )
 

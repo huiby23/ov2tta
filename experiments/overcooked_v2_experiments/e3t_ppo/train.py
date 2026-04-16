@@ -60,6 +60,23 @@ def _scale_partner_logits(pi: distrax.Categorical, partner_mask, beta):
     return distrax.Categorical(logits=pi.logits * scale)
 
 
+def _mix_partner_probs(pi: distrax.Categorical, partner_mask, eps):
+    probs = pi.probs
+    uniform = jnp.ones_like(probs) / probs.shape[-1]
+    mixed_probs = (1.0 - eps) * probs + eps * uniform
+    mixed_probs = jnp.where(jnp.expand_dims(partner_mask, axis=-1), mixed_probs, probs)
+    mixed_probs = mixed_probs / jnp.sum(mixed_probs, axis=-1, keepdims=True)
+    return distrax.Categorical(probs=mixed_probs)
+
+
+def _apply_partner_mix(pi: distrax.Categorical, partner_mask, eps, mode):
+    if mode == "ppo_consistent":
+        return _scale_partner_logits(pi, partner_mask, eps)
+    if mode == "official_addrand_probs":
+        return _mix_partner_probs(pi, partner_mask, eps)
+    raise ValueError(f"Unknown partner mix mode: {mode}")
+
+
 def _partner_mask_from_env_idxs(partner_agent_idxs, env, num_actors):
     partner_mask_dict = {
         agent: partner_agent_idxs == idx for idx, agent in enumerate(env.agents)
@@ -195,6 +212,14 @@ def _mask_grads(grads, mask):
     return core.freeze(masked) if grads_is_frozen else masked
 
 
+def _soft_update_params(target_params, source_params, tau):
+    return jax.tree_util.tree_map(
+        lambda target, source: (1.0 - tau) * target + tau * source,
+        target_params,
+        source_params,
+    )
+
+
 def make_train(
     config,
     update_step_offset=None,
@@ -220,6 +245,7 @@ def make_train(
     use_history_context = model_config.get("USE_HISTORY_CONTEXT", False)
     use_partner_mix = model_config.get("USE_PARTNER_MIX", False)
     partner_mix_mode = model_config.get("PARTNER_MIX_MODE", "ppo_consistent")
+    partner_copy_coef = float(model_config.get("PARTNER_COPY_COEF", 0.1))
     use_moa_aux = model_config.get("USE_MOA_AUX", True)
     separate_moa_update = model_config.get("SEPARATE_MOA_UPDATE", False)
     context_update_epochs = int(
@@ -258,6 +284,15 @@ def make_train(
             checkpoint_states,
             params,
         )
+
+    def _swap_agent_flat(x):
+        if x is None:
+            return None
+        prefix_shape = x.shape[:-2]
+        feature_shape = x.shape[-1:]
+        x = x.reshape(prefix_shape + (env.num_agents, model_config["NUM_ENVS"]) + feature_shape)
+        x = jnp.take(x, jnp.array([1, 0]), axis=len(prefix_shape))
+        return x.reshape(prefix_shape + (model_config["NUM_ACTORS"],) + feature_shape)
 
     def create_learning_rate_fn():
         base_learning_rate = model_config["LR"]
@@ -343,6 +378,7 @@ def make_train(
         )
         if initial_train_state is not None:
             train_state = initial_train_state
+        partner_params = train_state.params
 
         ppo_param_mask, context_param_mask = _build_official_param_masks(
             train_state.params,
@@ -379,6 +415,7 @@ def make_train(
             def _env_step(env_step_state, unused):
                 (
                     train_state,
+                    partner_params,
                     env_state,
                     last_obs,
                     last_done,
@@ -422,13 +459,42 @@ def make_train(
                     partner_mask,
                     jnp.zeros_like(partner_mask),
                 )
-                acting_pi = _scale_partner_logits(
-                    pi,
-                    acting_partner_mask,
-                    model_config["PARTNER_MIX_EPS"],
-                )
-                action = acting_pi.sample(seed=policy_rng)
-                log_prob = acting_pi.log_prob(action)
+                if use_partner_mix and partner_mix_mode == "official_addrand_probs":
+                    _, _, _, lagged_other_pi = network.apply(
+                        partner_params,
+                        hstate,
+                        ac_in,
+                    )
+                    partner_pi = distrax.Categorical(
+                        logits=_swap_agent_flat(lagged_other_pi.logits)
+                    )
+                    acting_partner_pi = _mix_partner_probs(
+                        partner_pi,
+                        acting_partner_mask,
+                        model_config["PARTNER_MIX_EPS"],
+                    )
+                    policy_rng, partner_policy_rng = jax.random.split(policy_rng)
+                    ego_action = pi.sample(seed=policy_rng)
+                    partner_action = acting_partner_pi.sample(seed=partner_policy_rng)
+                    action = jnp.where(acting_partner_mask, partner_action, ego_action)
+                    ego_probs = pi.probs
+                    acting_probs = jnp.where(
+                        jnp.expand_dims(acting_partner_mask, axis=-1),
+                        acting_partner_pi.probs,
+                        ego_probs,
+                    )
+                    acting_pi = distrax.Categorical(probs=acting_probs)
+                    log_prob = acting_pi.log_prob(action)
+                    train_mask = jnp.logical_not(acting_partner_mask)
+                else:
+                    acting_pi = _apply_partner_mix(
+                        pi,
+                        acting_partner_mask,
+                        model_config["PARTNER_MIX_EPS"],
+                        partner_mix_mode,
+                    )
+                    action = acting_pi.sample(seed=policy_rng)
+                    log_prob = acting_pi.log_prob(action)
 
                 env_act = unbatchify(
                     action,
@@ -550,6 +616,7 @@ def make_train(
 
                 env_step_state = (
                     train_state,
+                    partner_params,
                     env_state,
                     obsv,
                     done_batch,
@@ -564,6 +631,7 @@ def make_train(
 
             (
                 train_state,
+                partner_params,
                 env_state,
                 obsv,
                 done_batch,
@@ -577,6 +645,7 @@ def make_train(
             partner_agent_idxs = _sample_partner_agent_idxs(_rng)
             env_step_state = (
                 train_state,
+                partner_params,
                 env_state,
                 obsv,
                 done_batch,
@@ -592,6 +661,7 @@ def make_train(
             )
             (
                 train_state,
+                partner_params,
                 env_state,
                 last_obs,
                 last_done,
@@ -652,7 +722,10 @@ def make_train(
             def _update_epoch(update_state, epoch_idx):
                 def _context_loss_fn(params, init_hstate, traj_batch):
                     hstate = _strip_scan_axis(init_hstate)
-                    train_mask = jax.lax.stop_gradient(traj_batch.train_mask)
+                    context_mask = jnp.ones_like(
+                        traj_batch.train_mask,
+                        dtype=jnp.bool_,
+                    )
                     _, _, _, other_pi = network.apply(
                         params,
                         hstate,
@@ -669,8 +742,8 @@ def make_train(
                     moa_pred = jnp.argmax(other_pi.logits, axis=-1)
                     moa_acc = (moa_pred == traj_batch.other_action).astype(jnp.float32)
                     return (
-                        masked_mean(context_loss, train_mask),
-                        masked_mean(moa_acc, train_mask),
+                        masked_mean(context_loss, context_mask),
+                        masked_mean(moa_acc, context_mask),
                     )
 
                 def _ppo_loss_fn(params, init_hstate, traj_batch, gae, targets):
@@ -689,10 +762,11 @@ def make_train(
                     )
 
                     if use_partner_mix and partner_mix_mode == "ppo_consistent":
-                        behavior_pi = _scale_partner_logits(
+                        behavior_pi = _apply_partner_mix(
                             pi,
                             traj_batch.partner_mask,
                             model_config["PARTNER_MIX_EPS"],
+                            partner_mix_mode,
                         )
                     else:
                         behavior_pi = pi
@@ -787,7 +861,7 @@ def make_train(
                         zeros = jnp.array(0.0, dtype=jnp.float32)
                         return train_state, (zeros, zeros, zeros)
 
-                    run_update = jnp.logical_and(moa_active, traj_batch.train_mask.any())
+                    run_update = jnp.asarray(moa_active, dtype=jnp.bool_)
                     return jax.lax.cond(run_update, _perform_update, _no_op)
 
                 def _ppo_update_minbatch(train_state, batch_info):
@@ -822,7 +896,15 @@ def make_train(
                         _no_op,
                     )
 
-                train_state, init_hstate, traj_batch, advantages, targets, rng = update_state
+                (
+                    train_state,
+                    partner_params,
+                    init_hstate,
+                    traj_batch,
+                    advantages,
+                    targets,
+                    rng,
+                ) = update_state
                 rng, _rng = jax.random.split(rng)
 
                 hstate = _add_scan_axis(init_hstate)
@@ -900,6 +982,7 @@ def make_train(
 
                 update_state = (
                     train_state,
+                    partner_params,
                     init_hstate,
                     traj_batch,
                     advantages,
@@ -911,6 +994,7 @@ def make_train(
             rng, _rng = jax.random.split(rng)
             update_state = (
                 train_state,
+                partner_params,
                 initial_hstate,
                 traj_batch,
                 advantages,
@@ -929,7 +1013,14 @@ def make_train(
             )
 
             train_state = update_state[0]
+            partner_params = update_state[1]
             rng = update_state[-1]
+            if use_partner_mix and partner_mix_mode == "official_addrand_probs":
+                partner_params = _soft_update_params(
+                    partner_params,
+                    train_state.params,
+                    partner_copy_coef,
+                )
             metric = traj_batch.info
 
             ppo_loss_info, context_loss_info = loss_info
@@ -989,6 +1080,7 @@ def make_train(
 
             runner_state = (
                 train_state,
+                partner_params,
                 env_state,
                 last_obs,
                 last_done,
@@ -1017,6 +1109,7 @@ def make_train(
         rng, _rng = jax.random.split(rng)
         runner_state = (
             train_state,
+            partner_params,
             initial_checkpoints,
             env_state,
             obsv,
@@ -1032,6 +1125,7 @@ def make_train(
         def _scan_update(runner_state, unused):
             (
                 train_state,
+                partner_params,
                 checkpoint_states,
                 env_state,
                 obsv,
@@ -1047,6 +1141,7 @@ def make_train(
                 (
                     (
                         train_state,
+                        partner_params,
                         env_state,
                         obsv,
                         done_batch,
@@ -1061,6 +1156,7 @@ def make_train(
             )
             (
                 train_state,
+                partner_params,
                 env_state,
                 obsv,
                 done_batch,
@@ -1081,6 +1177,7 @@ def make_train(
                 )
             runner_state = (
                 train_state,
+                partner_params,
                 checkpoint_states,
                 env_state,
                 obsv,
