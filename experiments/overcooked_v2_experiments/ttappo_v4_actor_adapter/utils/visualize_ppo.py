@@ -19,12 +19,12 @@ sys.path.append(os.path.dirname(os.path.dirname(DIR)))
 from overcooked_v2_experiments.eval.evaluate import eval_pairing
 from overcooked_v2_experiments.eval.policy import FunctionalPolicyPairing
 from overcooked_v2_experiments.helper.plots import visualize_cross_play_matrix
-from overcooked_v2_experiments.ttappo_v3_memory.policy import (
+from overcooked_v2_experiments.ttappo_v4_actor_adapter.policy import (
     EVAL_MODES,
     PPOParams,
     policy_checkoints_to_functional_policy_pairing,
 )
-from overcooked_v2_experiments.ttappo_v3_memory.utils.store import load_all_checkpoints
+from overcooked_v2_experiments.ttappo_v4_actor_adapter.utils.store import load_all_checkpoints
 from overcooked_v2_experiments.utils.utils import mini_batch_pmap
 
 

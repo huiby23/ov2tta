@@ -6,16 +6,16 @@ import jax
 import jax.numpy as jnp
 import jaxmarl
 
-from overcooked_v2_experiments.ttappo_v3_memory.models.model import (
+from overcooked_v2_experiments.ttappo_v4_actor_adapter.models.model import (
     get_actor_critic,
     initialize_carry,
 )
-from overcooked_v2_experiments.ttappo_v3_memory.policy import (
+from overcooked_v2_experiments.ttappo_v4_actor_adapter.policy import (
     EVAL_MODES,
     _readout_scale,
     _resolve_memory_action,
 )
-from overcooked_v2_experiments.ttappo_v3_memory.utils.store import load_all_checkpoints
+from overcooked_v2_experiments.ttappo_v4_actor_adapter.utils.store import load_all_checkpoints
 
 
 def _parse_runs_csv(run_dir: Path, runs_csv: str | None):

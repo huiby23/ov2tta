@@ -55,6 +55,7 @@ class ActorCriticCNN(ActorCriticBase):
         fc_dim = self.config["FC_DIM_SIZE"]
         temporal_dim = self.config.get("TEMPORAL_HIDDEN_DIM", fc_dim)
         memory_dim = self.config.get("PARTNER_MEMORY_DIM", temporal_dim)
+        actor_adapter_dim = self.config.get("ACTOR_ADAPTER_DIM", fc_dim)
 
         self.temporal_proj_layer = nn.Dense(
             temporal_dim,
@@ -73,6 +74,42 @@ class ActorCriticCNN(ActorCriticBase):
             kernel_init=orthogonal(jnp.sqrt(2)),
             bias_init=constant(0.0),
             name="ttt_adapter_up",
+        )
+        self.actor_backbone_layer = nn.Dense(
+            fc_dim,
+            kernel_init=orthogonal(jnp.sqrt(2)),
+            bias_init=constant(0.0),
+            name="actor_backbone",
+        )
+        self.actor_adapter_down_layer = nn.Dense(
+            actor_adapter_dim,
+            kernel_init=orthogonal(jnp.sqrt(2)),
+            bias_init=constant(0.0),
+            name="actor_adapter_down",
+        )
+        self.actor_adapter_up_layer = nn.Dense(
+            fc_dim,
+            kernel_init=orthogonal(0.01),
+            bias_init=constant(0.0),
+            name="actor_adapter_up",
+        )
+        self.actor_logits_layer = nn.Dense(
+            self.action_dim,
+            kernel_init=orthogonal(0.01),
+            bias_init=constant(0.0),
+            name="actor_logits",
+        )
+        self.critic_hidden_layer = nn.Dense(
+            fc_dim,
+            kernel_init=orthogonal(jnp.sqrt(2)),
+            bias_init=constant(0.0),
+            name="critic_hidden",
+        )
+        self.critic_value_layer = nn.Dense(
+            1,
+            kernel_init=orthogonal(1.0),
+            bias_init=constant(0.0),
+            name="critic_value",
         )
         self.partner_memory_updater = ScannedPartnerMemoryUpdater(
             action_dim=self.action_dim,
@@ -195,6 +232,7 @@ class ActorCriticCNN(ActorCriticBase):
         obs, done, partner_action, update_mask, readout_scale = self._extract_inputs(x)
         activation = self._activation()
         film_scale = float(self.config.get("FILM_SCALE", 0.2))
+        actor_adapter_scale = float(self.config.get("ACTOR_ADAPTER_SCALE", 0.5))
 
         embed_model = CNNSimple(
             output_size=self.config["FC_DIM_SIZE"],
@@ -247,30 +285,19 @@ class ActorCriticCNN(ActorCriticBase):
         partner_hidden = activation(partner_hidden)
         partner_logits = self.partner_logits_layer(partner_hidden)
 
-        actor_mean = nn.Dense(
-            self.config["FC_DIM_SIZE"],
-            kernel_init=orthogonal(jnp.sqrt(2)),
-            bias_init=constant(0.0),
-        )(feature_mod)
-        actor_mean = activation(actor_mean)
-        actor_mean = nn.Dense(
-            self.action_dim,
-            kernel_init=orthogonal(0.01),
-            bias_init=constant(0.0),
-        )(actor_mean)
-        pi = distrax.Categorical(logits=actor_mean)
+        actor_hidden = self.actor_backbone_layer(feature_z)
+        actor_adapter_hidden = self.actor_adapter_down_layer(memory_seq)
+        actor_adapter_hidden = activation(actor_adapter_hidden)
+        actor_adapter_delta = actor_adapter_scale * self.actor_adapter_up_layer(
+            actor_adapter_hidden
+        )
+        actor_hidden = activation(actor_hidden + actor_adapter_delta)
+        actor_logits = self.actor_logits_layer(actor_hidden)
+        pi = distrax.Categorical(logits=actor_logits)
 
-        critic = nn.Dense(
-            self.config["FC_DIM_SIZE"],
-            kernel_init=orthogonal(jnp.sqrt(2)),
-            bias_init=constant(0.0),
-        )(feature_mod)
-        critic = activation(critic)
-        critic = nn.Dense(
-            1,
-            kernel_init=orthogonal(1.0),
-            bias_init=constant(0.0),
-        )(critic)
+        critic_hidden = self.critic_hidden_layer(feature_z)
+        critic_hidden = activation(critic_hidden)
+        critic = self.critic_value_layer(critic_hidden)
 
         aux = {
             "partner_logits": partner_logits,
@@ -280,6 +307,7 @@ class ActorCriticCNN(ActorCriticBase):
             "film_gamma": gamma,
             "film_beta": beta,
             "feature_mod": feature_mod,
+            "actor_adapter_delta": actor_adapter_delta,
             "memory_update_rate": memory_update_rate,
         }
         next_hidden = PartnerMemoryCarry(

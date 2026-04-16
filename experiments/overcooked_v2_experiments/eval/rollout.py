@@ -122,5 +122,11 @@ def get_rollout_functional(policies: FunctionalPolicyPairing, env, key) -> Polic
         )
 
         return get_functional_rollout(policies, env, key)
+    if policies.backend == "ttappo_v4_actor_adapter":
+        from overcooked_v2_experiments.ttappo_v4_actor_adapter.policy import (
+            get_functional_rollout,
+        )
+
+        return get_functional_rollout(policies, env, key)
 
     raise NotImplementedError(f"Unknown functional backend: {policies.backend}")

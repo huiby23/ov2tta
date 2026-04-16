@@ -11,8 +11,8 @@ from overcooked_v2_experiments.eval.policy import (
     FunctionalPolicyPairing,
     PolicyPairing,
 )
-from overcooked_v2_experiments.ttappo_v3_memory.models.abstract import ActorCriticBase
-from overcooked_v2_experiments.ttappo_v3_memory.models.model import (
+from overcooked_v2_experiments.ttappo_v4_actor_adapter.models.abstract import ActorCriticBase
+from overcooked_v2_experiments.ttappo_v4_actor_adapter.models.model import (
     get_actor_critic,
     initialize_carry,
 )
@@ -174,7 +174,7 @@ def policy_checkoints_to_functional_policy_pairing(
         )
     return FunctionalPolicyPairing(
         tuple(policies),
-        backend="ttappo_v3_memory",
+        backend="ttappo_v4_actor_adapter",
         config=config,
     )
 
