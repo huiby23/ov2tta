@@ -384,6 +384,65 @@ class PPOPolicy(AbstractPolicy):
         )
         return action, next_hstate
 
+    @partial(jax.jit, static_argnums=(0,))
+    def forward_diagnostics(self, obs, done, hstate=None, params=None):
+        if params is None:
+            params = self.params
+        if hstate is None:
+            hstate = self.init_hstate(1)
+
+        eval_mode = getattr(self, "eval_mode", "memory_off")
+        ac_in = (obs, jnp.array(done))
+        ac_in = jax.tree_util.tree_map(lambda x: x[jnp.newaxis, ...], ac_in)
+        ac_in = jax.tree_util.tree_map(lambda x: x[jnp.newaxis, ...], ac_in)
+        ac_in = ac_in + (_readout_scale(eval_mode),)
+
+        next_base_hstate, pi, value, aux = _apply_policy_network(
+            self.network,
+            params,
+            hstate.base_hstate,
+            ac_in,
+        )
+        next_hstate = MemoryPolicyState(
+            base_hstate=next_base_hstate,
+            cached_feature_z=aux["feature_z"][0, 0],
+            cached_temporal_feature=aux["temporal_feature"][0, 0],
+            cached_partner_logits=aux["partner_logits"][0, 0],
+            cached_self_action=hstate.cached_self_action,
+            prev_partner_action=hstate.prev_partner_action,
+        )
+        return pi.probs[0, 0], value[0, 0], next_hstate
+
+    @partial(jax.jit, static_argnums=(0,))
+    def forward_diagnostics_batch(self, obs_batch, done_batch, hstate=None, params=None):
+        if params is None:
+            params = self.params
+        if hstate is None:
+            hstate = self.init_hstate(int(obs_batch.shape[0]))
+
+        eval_mode = getattr(self, "eval_mode", "memory_off")
+        ac_in = (
+            jnp.asarray(obs_batch)[jnp.newaxis, ...],
+            jnp.asarray(done_batch)[jnp.newaxis, ...],
+            _readout_scale(eval_mode)[jnp.newaxis, ...],
+        )
+
+        next_base_hstate, pi, value, aux = _apply_policy_network(
+            self.network,
+            params,
+            hstate.base_hstate,
+            ac_in,
+        )
+        next_hstate = MemoryPolicyState(
+            base_hstate=next_base_hstate,
+            cached_feature_z=aux["feature_z"][0],
+            cached_temporal_feature=aux["temporal_feature"][0],
+            cached_partner_logits=aux["partner_logits"][0],
+            cached_self_action=hstate.cached_self_action,
+            prev_partner_action=hstate.prev_partner_action,
+        )
+        return pi.probs[0], value[0], next_hstate
+
     def init_hstate(self, batch_size, key=None):
         del key
         if batch_size != 1:

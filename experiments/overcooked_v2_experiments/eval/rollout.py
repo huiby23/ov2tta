@@ -12,6 +12,15 @@ class PolicyRollout:
     total_reward: chex.Scalar
 
 
+@chex.dataclass
+class DiagnosticRollout:
+    obs_seq: chex.ArrayTree
+    state_seq: chex.Array
+    done_seq: chex.ArrayTree
+    actions_seq: chex.Array
+    total_reward: chex.Scalar
+
+
 def init_rollout(policies: List[AbstractPolicy], env):
     num_agents = env.num_agents
 
@@ -99,6 +108,70 @@ def get_rollout(policies: PolicyPairing, env, key) -> PolicyRollout:
     )
 
 
+def get_rollout_with_observations(
+    policies: PolicyPairing, env, key
+) -> DiagnosticRollout:
+    init_hstate, _get_actions = init_rollout(policies, env)
+
+    @jax.jit
+    def _perform_step(carry, key):
+        obs, state, done, total_reward, hstate = carry
+
+        key_sample, key_step = jax.random.split(key, 2)
+        actions, next_hstate = _get_actions(obs, done, hstate, key_sample)
+
+        next_obs, next_state, reward, next_done, info = env.step(
+            key_step, state, actions
+        )
+
+        if env.num_agents == 2:
+            updated_hstate = {}
+            for i, policy in enumerate(policies):
+                agent_id = f"agent_{i}"
+                partner_id = f"agent_{1 - i}"
+                updated_hstate[agent_id] = policy.update_after_step(
+                    next_hstate[agent_id],
+                    obs[partner_id],
+                    actions[partner_id],
+                    next_done[agent_id],
+                )
+        else:
+            updated_hstate = next_hstate
+
+        new_total_reward = total_reward + reward["agent_0"]
+
+        carry = (next_obs, next_state, next_done, new_total_reward, updated_hstate)
+        return carry, (obs, state, done, actions)
+
+    key, key_r = jax.random.split(key, 2)
+    obs, state = env.reset(key_r)
+
+    init_done = {f"agent_{i}": False for i in range(env.num_agents)}
+    init_done["__all__"] = False
+
+    keys = jax.random.split(key, env.max_steps)
+    carry = (
+        obs,
+        state,
+        init_done,
+        0.0,
+        init_hstate,
+    )
+    carry, (obs_seq, state_seq, done_seq, actions_seq) = jax.lax.scan(
+        _perform_step, carry, keys
+    )
+
+    total_reward = carry[-2]
+
+    return DiagnosticRollout(
+        obs_seq=obs_seq,
+        state_seq=state_seq,
+        done_seq=done_seq,
+        actions_seq=actions_seq,
+        total_reward=total_reward,
+    )
+
+
 def get_rollout_functional(policies: FunctionalPolicyPairing, env, key) -> PolicyRollout:
     if policies.backend == "ttappo":
         from overcooked_v2_experiments.ttappo.policy import get_functional_rollout
@@ -118,6 +191,12 @@ def get_rollout_functional(policies: FunctionalPolicyPairing, env, key) -> Polic
         return get_functional_rollout(policies, env, key)
     if policies.backend == "ttappo_v3_memory":
         from overcooked_v2_experiments.ttappo_v3_memory.policy import (
+            get_functional_rollout,
+        )
+
+        return get_functional_rollout(policies, env, key)
+    if policies.backend == "ttappo_v3_1_semantic_memory":
+        from overcooked_v2_experiments.ttappo_v3_1_semantic_memory.policy import (
             get_functional_rollout,
         )
 

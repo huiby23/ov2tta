@@ -93,6 +93,7 @@ def single_run(config):
     with jax.disable_jit(False):
         rng = jax.random.PRNGKey(config["SEED"])
         rngs = jax.random.split(rng, num_runs)
+        run_indices = jnp.arange(num_runs, dtype=jnp.int32)
 
         config_copy = copy.deepcopy(config)
         if bc_policy is not None:
@@ -123,7 +124,9 @@ def single_run(config):
             print("Using BC policy", bc_policy)
             train_extra_args["population"] = bc_policy
 
-        out = mini_batch_pmap(train_jit, num_devices)(rngs, **train_extra_args)
+        out = mini_batch_pmap(train_jit, num_devices)(
+            rngs, run_indices, **train_extra_args
+        )
         # out = scanned_mini_batch_map(train_jit, 4, use_pmap=True)(
         #     rngs, **train_extra_args
         # )

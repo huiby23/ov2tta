@@ -34,11 +34,7 @@ class PPOPolicy(AbstractPolicy):
 
         self.params = params
 
-    def compute_action(self, obs, done, hstate, key, params=None):
-        if params is None:
-            params = self.params
-        assert params is not None
-
+    def _format_network_input(self, obs, done):
         done = jnp.array(done)
 
         def _add_dim(tree):
@@ -49,7 +45,19 @@ class PPOPolicy(AbstractPolicy):
         if not self.with_batching:
             ac_in = _add_dim(ac_in)
 
-        # print("ac_in shapes", ac_in[0].shape, ac_in[1].shape, hstate.shape, type(params))
+        return ac_in
+
+    def _format_network_input_batch(self, obs_batch, done_batch):
+        obs_batch = jnp.array(obs_batch)
+        done_batch = jnp.array(done_batch)
+        return obs_batch[jnp.newaxis, ...], done_batch[jnp.newaxis, ...]
+
+    def compute_action(self, obs, done, hstate, key, params=None):
+        if params is None:
+            params = self.params
+        assert params is not None
+
+        ac_in = self._format_network_input(obs, done)
 
         next_hstate, pi, _ = self.network.apply(params, hstate, ac_in)
 
@@ -68,9 +76,34 @@ class PPOPolicy(AbstractPolicy):
 
         return action, next_hstate
 
+    def forward_diagnostics(self, obs, done, hstate, params=None):
+        if params is None:
+            params = self.params
+        assert params is not None
+
+        ac_in = self._format_network_input(obs, done)
+        next_hstate, pi, value = self.network.apply(params, hstate, ac_in)
+
+        if self.with_batching:
+            probs = pi.probs[0]
+            value = value[0]
+        else:
+            probs = pi.probs[0, 0]
+            value = value[0, 0]
+
+        return probs, value, next_hstate
+
+    def forward_diagnostics_batch(self, obs_batch, done_batch, hstate=None, params=None):
+        if params is None:
+            params = self.params
+        assert params is not None
+
+        ac_in = self._format_network_input_batch(obs_batch, done_batch)
+        next_hstate, pi, value = self.network.apply(params, hstate, ac_in)
+
+        return pi.probs[0], value[0], next_hstate
+
     def init_hstate(self, batch_size, key=None):
-        # assert batch_size == 1 or self.with_batching
-        print("Initializing hstate with batch size", batch_size)
         return initialize_carry(self.config, batch_size)
 
 

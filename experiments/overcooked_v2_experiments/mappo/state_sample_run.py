@@ -42,10 +42,6 @@ def state_sample_run(config):
 
     config = OmegaConf.to_container(config)
 
-    if config["model"]["TYPE"] != "RNN":
-        raise NotImplementedError(
-            "MAPPO state augmentation currently supports the RNN configuration only."
-        )
 
     num_seeds = config["NUM_SEEDS"]
     num_iterations = config["NUM_ITERATIONS"]

@@ -1,0 +1,61 @@
+"TYPE": "CNN"
+"FC_DIM_SIZE": 64
+"ACTIVATION": "relu"
+
+"ARCH": "cnn"
+"CNN_FEATURES": 32
+
+"TOTAL_TIMESTEPS": 1e7
+"REW_SHAPING_HORIZON": 5e6
+
+"GAMMA": 0.99
+"GAE_LAMBDA": 0.95
+"SCALE_CLIP_EPS": False
+"VF_COEF": 0.5
+"MAX_GRAD_NORM": 0.5
+"ANNEAL_LR": True
+"LR_WARMUP": 0.05
+
+"LR": 4e-4
+"NUM_ENVS": 64
+"NUM_STEPS": 256
+"UPDATE_EPOCHS": 4
+"NUM_MINIBATCHES": 16
+"CLIP_EPS": 0.2
+"ENT_COEF": 0.04
+
+# original overcooked
+# "LR": 4e-4
+# "NUM_ENVS": 64
+# "NUM_STEPS": 256
+# "UPDATE_EPOCHS": 4
+# "NUM_MINIBATCHES": 16
+# "CLIP_EPS": 0.2
+# "ENT_COEF": 0.04
+
+# PPO CNN + official E3T module migration.
+# Defaults keep PPO self-play behavior and add CE-trained partner modeling.
+USE_HISTORY_CONTEXT: True
+CONTEXT_LENGTH: 5
+LATENT_DIM: 64
+TRAIN_MODE: MLP
+E3T_NUM_HIDDEN_LAYERS: 3
+E3T_SIZE_HIDDEN_LAYERS: 64
+E3T_NUM_FILTERS: 25
+E3T_NUM_CONV_LAYERS: 3
+STAY_ACTION: 4
+ACTION_DIM: 6
+CONTEXT_UPDATE_EPOCHS: 8
+E3T_ENABLE_CE: True
+E3T_CONDITION_ACTOR: True
+E3T_DETACH_ACTOR_CONDITION: True
+E3T_ACTOR_CONDITION: predicted_partner
+
+# main_policy preserves PPO self-play action collection. Set human_branch to test
+# official E3T partner-behavior sampling separately.
+E3T_PARTNER_SOURCE: main_policy
+USE_OFFICIAL_E3T_PARTNER: False
+USE_PARTNER_MIX: False
+PARTNER_MIX_EPS: 0.0
+RAND: 0.0
+COPY: 0.0

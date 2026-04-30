@@ -105,6 +105,7 @@ def state_sample_run(config):
             config_copy["env"]["ENV_KWARGS"]["initial_state_buffer"] = state_buffer
 
             keys = jax.random.split(key, num_seeds)
+            run_indices = jnp.arange(num_seeds, dtype=jnp.int32)
             train_jit = jax.jit(
                 make_train(
                     config_copy,
@@ -119,6 +120,7 @@ def state_sample_run(config):
             # if "gpu" in jax.devices()
 
             keys = keys.reshape((num_devices, -1, *keys.shape[1:]))
+            run_indices = run_indices.reshape((num_devices, -1))
             if prev_train_state is not None:
                 prev_train_state = jax.tree_map(
                     lambda x: x.reshape((num_devices, -1, *x.shape[1:])),
@@ -129,7 +131,7 @@ def state_sample_run(config):
             # print("Previous policies shape: ", previous_policies)
 
             ret = jax.pmap(jax.vmap(train_jit))(
-                keys, initial_train_state=prev_train_state
+                keys, run_indices, initial_train_state=prev_train_state
             )
 
             return jax.tree_map(lambda x: x.reshape((-1, *x.shape[2:])), ret)

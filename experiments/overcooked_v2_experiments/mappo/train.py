@@ -123,6 +123,37 @@ class CentralizedCriticRNN(nn.Module):
         return hidden, jnp.squeeze(critic, axis=-1)
 
 
+class CentralizedCriticCNN(nn.Module):
+    config: Dict
+
+    @nn.compact
+    def __call__(self, hidden, x):
+        world_state, _dones = x
+
+        activation = nn.relu if self.config["ACTIVATION"] == "relu" else nn.tanh
+
+        critic = nn.Dense(
+            self.config["FC_DIM_SIZE"],
+            kernel_init=orthogonal(np.sqrt(2)),
+            bias_init=constant(0.0),
+        )(world_state)
+        critic = activation(critic)
+        critic = nn.LayerNorm()(critic)
+        critic = nn.Dense(
+            self.config["FC_DIM_SIZE"],
+            kernel_init=orthogonal(np.sqrt(2)),
+            bias_init=constant(0.0),
+        )(critic)
+        critic = activation(critic)
+        critic = nn.Dense(
+            1,
+            kernel_init=orthogonal(1.0),
+            bias_init=constant(0.0),
+        )(critic)
+
+        return hidden, jnp.squeeze(critic, axis=-1)
+
+
 def make_train(
     config,
     update_step_offset=None,
@@ -132,8 +163,6 @@ def make_train(
     env_config = config["env"]
     model_config = config["model"]
 
-    if model_config["TYPE"] != "RNN":
-        raise NotImplementedError("This first MAPPO baseline currently supports RNN only.")
 
     env = jaxmarl.make(env_config["ENV_NAME"], **env_config["ENV_KWARGS"])
     env = OvercookedV2WorldStateWrapper(env)
@@ -232,7 +261,8 @@ def make_train(
         original_seed = rng[0]
 
         actor_network = get_actor_critic(config)
-        critic_network = CentralizedCriticRNN(model_config)
+        critic_cls = CentralizedCriticRNN if model_config["TYPE"] == "RNN" else CentralizedCriticCNN
+        critic_network = critic_cls(model_config)
 
         rng, actor_rng, critic_rng = jax.random.split(rng, 3)
 
@@ -598,7 +628,7 @@ def make_train(
                         train_mask = jax.lax.stop_gradient(traj_batch.train_mask)
                         _, pi, _ = actor_train_state.apply_fn(
                             actor_params,
-                            init_hstate.squeeze(axis=0),
+                            None if init_hstate is None else init_hstate.squeeze(axis=0),
                             (traj_batch.obs, traj_batch.done),
                         )
                         log_prob = pi.log_prob(traj_batch.action)
@@ -624,7 +654,7 @@ def make_train(
                         train_mask = jax.lax.stop_gradient(traj_batch.train_mask)
                         _, value = critic_train_state.apply_fn(
                             critic_params,
-                            init_hstate.squeeze(axis=0),
+                            None if init_hstate is None else init_hstate.squeeze(axis=0),
                             (traj_batch.world_state, traj_batch.done),
                         )
                         value_pred_clipped = traj_batch.value + (
@@ -694,9 +724,16 @@ def make_train(
                 ) = update_state
                 rng, perm_rng = jax.random.split(rng)
 
+                actor_batch_hstate = actor_init_hstate
+                if actor_batch_hstate is not None:
+                    actor_batch_hstate = actor_batch_hstate[jnp.newaxis, :]
+                critic_batch_hstate = critic_init_hstate
+                if critic_batch_hstate is not None:
+                    critic_batch_hstate = critic_batch_hstate[jnp.newaxis, :]
+
                 batch = (
-                    actor_init_hstate[jnp.newaxis, :],
-                    critic_init_hstate[jnp.newaxis, :],
+                    actor_batch_hstate,
+                    critic_batch_hstate,
                     traj_batch,
                     advantages.squeeze(),
                     targets.squeeze(),

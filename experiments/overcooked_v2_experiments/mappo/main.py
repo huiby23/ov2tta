@@ -43,10 +43,6 @@ def single_run_with_checkpoint(config):
     from overcooked_v2_experiments.mappo.run import single_run
 
     config = OmegaConf.to_container(config)
-    if config["model"]["TYPE"] != "RNN":
-        raise NotImplementedError(
-            "The current MAPPO baseline is implemented for the RNN configuration only."
-        )
     if config.get("TUNE", False):
         raise NotImplementedError("MAPPO tuning entry is not implemented yet.")
 

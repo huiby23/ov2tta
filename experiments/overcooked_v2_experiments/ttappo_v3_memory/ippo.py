@@ -191,6 +191,7 @@ def make_train(
 
     def train(
         rng,
+        run_index=None,
         population: Optional[Union[AbstractPolicy, core.FrozenDict[str, Any]]] = None,
         initial_train_state=None,
     ):
@@ -822,13 +823,17 @@ def make_train(
                 update_step * model_config["NUM_STEPS"] * model_config["NUM_ENVS"]
             )
 
-            def callback(metric, original_seed):
+            def callback(metric, original_seed, run_index):
+                if run_index is None:
+                    prefix = f"rng{int(original_seed)}"
+                else:
+                    prefix = f"run_{int(run_index)}"
                 metric.update(
-                    {f"rng{int(original_seed)}/{k}": v for k, v in metric.items()}
+                    {f"{prefix}/{k}": v for k, v in metric.items()}
                 )
                 wandb.log(metric)
 
-            jax.debug.callback(callback, metric, original_seed)
+            jax.debug.callback(callback, metric, original_seed, run_index)
 
             if num_checkpoints > 0:
                 checkpoint_idx_selector = checkpoint_steps == update_step

@@ -15,8 +15,6 @@ class ActorCriticCNN(ActorCriticBase):
     def __call__(self, hidden, x):
         obs, done = x
 
-        print("obs shape", obs.shape)
-
         if self.config["ACTIVATION"] == "relu":
             activation = nn.relu
         else:

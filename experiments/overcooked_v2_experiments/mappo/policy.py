@@ -35,10 +35,7 @@ class MAPPOPolicy(AbstractPolicy):
             return params["actor"]
         return params
 
-    def compute_action(self, obs, done, hstate, key, params=None):
-        if params is None:
-            params = self.params
-        params = self._actor_params(params)
+    def _format_network_input(self, obs, done):
         done = jnp.array(done)
 
         def _add_dim(tree):
@@ -48,7 +45,21 @@ class MAPPOPolicy(AbstractPolicy):
         ac_in = _add_dim(ac_in)
         if not self.with_batching:
             ac_in = _add_dim(ac_in)
+        return ac_in
 
+    def _format_network_input_batch(self, obs_batch, done_batch):
+        obs_batch = jnp.array(obs_batch)
+        done_batch = jnp.array(done_batch)
+        return obs_batch[jnp.newaxis, ...], done_batch[jnp.newaxis, ...]
+
+    def compute_action(self, obs, done, hstate, key, params=None):
+        if params is None:
+            params = self.params
+        params = self._actor_params(params)
+
+        if hstate is None:
+            hstate = self.init_hstate(1)
+        ac_in = self._format_network_input(obs, done)
         next_hstate, pi, _ = self.network.apply(params, hstate, ac_in)
 
         if self.stochastic:
@@ -62,6 +73,36 @@ class MAPPOPolicy(AbstractPolicy):
             action = action[0, 0]
 
         return action, next_hstate
+
+    def forward_diagnostics(self, obs, done, hstate, params=None):
+        if params is None:
+            params = self.params
+        params = self._actor_params(params)
+
+        if hstate is None:
+            hstate = self.init_hstate(1)
+        ac_in = self._format_network_input(obs, done)
+        next_hstate, pi, value = self.network.apply(params, hstate, ac_in)
+
+        if self.with_batching:
+            probs = pi.probs[0]
+            value = value[0]
+        else:
+            probs = pi.probs[0, 0]
+            value = value[0, 0]
+
+        return probs, value, next_hstate
+
+    def forward_diagnostics_batch(self, obs_batch, done_batch, hstate=None, params=None):
+        if params is None:
+            params = self.params
+        params = self._actor_params(params)
+
+        if hstate is None:
+            hstate = self.init_hstate(obs_batch.shape[0])
+        ac_in = self._format_network_input_batch(obs_batch, done_batch)
+        next_hstate, pi, value = self.network.apply(params, hstate, ac_in)
+        return pi.probs[0], value[0], next_hstate
 
     def init_hstate(self, batch_size, key=None):
         return initialize_carry(self.config, batch_size)

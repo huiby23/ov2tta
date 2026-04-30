@@ -1,0 +1,58 @@
+"TYPE": "CNN"
+"FC_DIM_SIZE": 64
+"ACTIVATION": "relu"
+
+"ARCH": "cnn"
+"CNN_FEATURES": 32
+
+# Official E3T experiment scale from ppo_sp_experiments.sh.
+"TOTAL_TIMESTEPS": 4.8e6
+"REW_SHAPING_HORIZON": 2.5e6
+
+"GAMMA": 0.99
+"GAE_LAMBDA": 0.98
+"SCALE_CLIP_EPS": False
+"VF_COEF": 1.0
+"MAX_GRAD_NORM": 0.1
+"ANNEAL_LR": False
+"LR_WARMUP": 0.0
+
+"LR": 1e-3
+"NUM_ENVS": 30
+"NUM_STEPS": 400
+"UPDATE_EPOCHS": 8
+"CONTEXT_UPDATE_EPOCHS": 8
+"NUM_MINIBATCHES": 6
+"CLIP_EPS": 0.05
+"ENT_COEF": 0.1
+
+# Official E3T encoder policy parameters.
+"USE_HISTORY_CONTEXT": True
+"CONTEXT_LENGTH": 5
+"LATENT_DIM": 64
+"TRAIN_MODE": "MLP"
+"E3T_NUM_HIDDEN_LAYERS": 3
+"E3T_SIZE_HIDDEN_LAYERS": 64
+"E3T_NUM_FILTERS": 25
+"E3T_NUM_CONV_LAYERS": 3
+"E3T_CONTEXT_MODE": False
+"STAY_ACTION": 4
+"ACTION_DIM": 6
+
+# Official self-play partner sampling: step_human(context_human), probs, addrand.
+"USE_OFFICIAL_E3T_PARTNER": True
+"RAND": 0.7
+"COPY": 0.1
+
+# Diagnostic switches. Defaults preserve the faithful E3T path.
+# E3T_PARTNER_SOURCE: human_branch | main_policy
+# E3T_ACTOR_CONDITION: predicted_partner | constant
+# E3T_ENABLE_CE: true | false
+"E3T_PARTNER_SOURCE": "human_branch"
+"E3T_ACTOR_CONDITION": "predicted_partner"
+"E3T_ENABLE_CE": True
+
+# Legacy switches are disabled for this faithful E3T path.
+"USE_PARTNER_MIX": False
+"PARTNER_MIX_EPS": 0.0
+"MOA_COEF": 0.0
