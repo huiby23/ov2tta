@@ -21,7 +21,9 @@ def _store_all_checkpoints(config, out, num_checkpoints):
     if num_checkpoints <= 0:
         return
 
-    checkpoints = out["runner_state"][1]
+    # train.runner_state = (train_state, partner_params, checkpoint_states, ...).
+    # Checkpoints live at index 2; index 1 is only the lagged partner params.
+    checkpoints = out["runner_state"][2]
     num_runs = jax.tree_util.tree_flatten(checkpoints)[0][0].shape[0]
     for run_num in range(num_runs):
         for checkpoint in range(num_checkpoints):
@@ -43,8 +45,6 @@ def single_run_with_checkpoint(config):
     config = OmegaConf.to_container(config)
     if config.get("TUNE", False):
         raise NotImplementedError("E3T-PPO tuning is not implemented.")
-    if "NUM_ITERATIONS" in config:
-        raise NotImplementedError("E3T-PPO state augmentation is not implemented.")
     if "FCP" in config or "BC" in config:
         raise NotImplementedError("E3T-PPO currently supports standard self-play only.")
     if config.get("VISUALIZE", False):
@@ -74,7 +74,16 @@ def single_run_with_checkpoint(config):
 
 @hydra.main(version_base=None, config_path="config", config_name="base")
 def main(config):
-    single_run_with_checkpoint(config)
+    if config["TUNE"]:
+        from overcooked_v2_experiments.e3t_ppo.tune import tune
+
+        tune(config)
+    elif "NUM_ITERATIONS" in config:
+        from overcooked_v2_experiments.e3t_ppo.state_sample_run import state_sample_run
+
+        state_sample_run(config)
+    else:
+        single_run_with_checkpoint(config)
 
 
 if __name__ == "__main__":

@@ -152,26 +152,42 @@ def _take_axis1(x, indices):
 def _build_official_param_masks(params, model_config):
     model_type = model_config["TYPE"]
 
-    if model_type != "CNN":
+    flat_params = flatten_dict(params)
+    if model_type == "CNN":
+        context_tokens = (
+            "context_encoder",
+            "context_obs_ln",
+            "context_hist_ln",
+            "context_proj_",
+            "context_ln",
+            "predictor_",
+        )
+        ppo_tokens = (
+            "policy_encoder",
+            "policy_ln",
+            "actor_",
+            "critic_",
+        )
+    elif model_type == "RNN":
+        context_tokens = (
+            "context_encoder",
+            "context_obs_ln",
+            "context_hist_ln",
+            "context_proj_",
+            "context_ln",
+            "predictor_",
+        )
+        ppo_tokens = (
+            "policy_encoder",
+            "policy_ln",
+            "policy_rnn",
+            "actor_",
+            "critic_",
+        )
+    else:
         ones_mask = jax.tree_util.tree_map(lambda _: True, params)
         zeros_mask = jax.tree_util.tree_map(lambda _: False, params)
         return ones_mask, zeros_mask
-
-    flat_params = flatten_dict(params)
-    context_tokens = (
-        "context_encoder",
-        "context_obs_ln",
-        "context_hist_ln",
-        "context_proj_",
-        "context_ln",
-        "predictor_",
-    )
-    ppo_tokens = (
-        "policy_encoder",
-        "policy_ln",
-        "actor_",
-        "critic_",
-    )
 
     ppo_flat = {}
     context_flat = {}

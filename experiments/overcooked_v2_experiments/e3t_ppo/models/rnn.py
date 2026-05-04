@@ -24,7 +24,10 @@ class ScannedRNN(nn.Module):
         ins, resets = x
         new_carry = self.initialize_carry(ins.shape[0], ins.shape[1])
         rnn_state = jnp.where(resets[:, None], new_carry, rnn_state)
-        new_rnn_state, y = nn.GRUCell(features=ins.shape[1])(rnn_state, ins)
+        new_rnn_state, y = nn.GRUCell(
+            features=ins.shape[1],
+            name="gru_cell",
+        )(rnn_state, ins)
         return new_rnn_state, y
 
     @staticmethod
@@ -61,27 +64,42 @@ class ActorCriticRNN(ActorCriticBase):
             predictor_hidden_dim,
         )
         use_history_context = self.config.get("USE_HISTORY_CONTEXT", False)
-        moa_to_actor = self.config.get("MOA_TO_ACTOR", False)
-        moa_to_actor_detach = self.config.get("MOA_TO_ACTOR_DETACH", True)
+        moa_to_actor = self.config.get("MOA_TO_ACTOR", True)
+        moa_to_actor_detach = self.config.get("MOA_TO_ACTOR_DETACH", False)
 
-        embed_model = CNN(
+        policy_embed_model = CNN(
             output_size=self.config["GRU_HIDDEN_DIM"],
             activation=activation,
+            name="policy_encoder",
         )
-        embedding = jax.vmap(embed_model)(obs)
-        embedding = nn.LayerNorm()(embedding)
+        policy_embedding = jax.vmap(policy_embed_model)(obs)
+        policy_embedding = nn.LayerNorm(name="policy_ln")(policy_embedding)
+        hidden, policy_embedding = ScannedRNN(name="policy_rnn")(
+            hidden,
+            (policy_embedding, dones),
+        )
 
-        hidden, embedding = ScannedRNN()(hidden, (embedding, dones))
-
+        context_obs_embedding = policy_embedding
         if use_history_context and history_obs is not None and history_actions is not None:
+            context_embed_model = CNN(
+                output_size=self.config["GRU_HIDDEN_DIM"],
+                activation=activation,
+                name="context_encoder",
+            )
+            context_obs_embedding = jax.vmap(context_embed_model)(obs)
+            context_obs_embedding = nn.LayerNorm(name="context_obs_ln")(
+                context_obs_embedding
+            )
+
+            history_obs = history_obs.astype(obs.dtype)
             history_embedding = jax.vmap(
                 lambda history_t: jax.vmap(
-                    embed_model,
+                    context_embed_model,
                     in_axes=1,
                     out_axes=1,
                 )(history_t)
             )(history_obs)
-            history_embedding = nn.LayerNorm()(history_embedding)
+            history_embedding = nn.LayerNorm(name="context_hist_ln")(history_embedding)
 
             clipped_history_actions = jnp.clip(history_actions, 0, self.action_dim - 1)
             history_action_oh = jax.nn.one_hot(clipped_history_actions, self.action_dim)
@@ -91,51 +109,73 @@ class ActorCriticRNN(ActorCriticBase):
             )
             history_features = nn.Dense(
                 context_hidden_dim,
+                name="context_proj_0",
                 kernel_init=orthogonal(jnp.sqrt(2.0)),
                 bias_init=constant(0.0),
             )(history_features)
             history_features = nn.leaky_relu(history_features)
             history_features = nn.Dense(
                 context_hidden_dim,
+                name="context_proj_1",
                 kernel_init=orthogonal(jnp.sqrt(2.0)),
                 bias_init=constant(0.0),
             )(history_features)
             history_features = nn.leaky_relu(history_features)
             context_embedding = history_features.mean(axis=2)
-            context_embedding = nn.LayerNorm()(context_embedding)
+            context_embedding = nn.LayerNorm(name="context_ln")(context_embedding)
         else:
             context_embedding = jnp.zeros(
-                embedding.shape[:-1] + (context_hidden_dim,),
-                dtype=embedding.dtype,
+                policy_embedding.shape[:-1] + (context_hidden_dim,),
+                dtype=policy_embedding.dtype,
             )
 
-        moa_input = (
-            jnp.concatenate([embedding, context_embedding], axis=-1)
+        prediction_input = (
+            jnp.concatenate([context_obs_embedding, context_embedding], axis=-1)
             if use_history_context
-            else embedding
+            else context_obs_embedding
         )
-        moa_hidden = nn.Dense(
+        prediction_other = nn.Dense(
             predictor_hidden_dim,
+            name="predictor_0",
             kernel_init=orthogonal(jnp.sqrt(2.0)),
             bias_init=constant(0.0),
-        )(moa_input)
-        moa_hidden = activation(moa_hidden)
-        moa_hidden = nn.Dense(
+        )(prediction_input)
+        prediction_other = nn.leaky_relu(prediction_other)
+        prediction_other = nn.Dense(
             predictor_hidden_dim,
+            name="predictor_1",
             kernel_init=orthogonal(jnp.sqrt(2.0)),
             bias_init=constant(0.0),
-        )(moa_hidden)
-        moa_hidden = activation(moa_hidden)
-        moa_logits = nn.Dense(
+        )(prediction_other)
+        prediction_other = nn.leaky_relu(prediction_other)
+        prediction_other = nn.Dense(
+            predictor_hidden_dim,
+            name="predictor_2",
+            kernel_init=orthogonal(jnp.sqrt(2.0)),
+            bias_init=constant(0.0),
+        )(prediction_other)
+        prediction_other = nn.leaky_relu(prediction_other)
+        prediction_other = nn.Dense(
+            predictor_hidden_dim,
+            name="predictor_3",
+            kernel_init=orthogonal(jnp.sqrt(2.0)),
+            bias_init=constant(0.0),
+        )(prediction_other)
+        prediction_other = nn.tanh(prediction_other)
+        prediction_other = nn.Dense(
             self.action_dim,
-            kernel_init=orthogonal(0.01),
+            name="predictor_out",
+            kernel_init=orthogonal(jnp.sqrt(2.0)),
             bias_init=constant(0.0),
-        )(moa_hidden)
-        other_pi = distrax.Categorical(logits=moa_logits)
+        )(prediction_other)
+        prediction_other = prediction_other / jnp.sqrt(
+            jnp.sum(prediction_other**2, axis=-1, keepdims=True) + 1e-10
+        )
+        other_pi = distrax.Categorical(logits=prediction_other)
 
-        actor_input = embedding
+        actor_input = policy_embedding
         if moa_to_actor:
-            actor_condition = moa_hidden
+            actor_condition = prediction_other
             if use_history_context:
                 actor_condition = jnp.concatenate(
                     [actor_condition, context_embedding],
@@ -143,16 +183,18 @@ class ActorCriticRNN(ActorCriticBase):
                 )
             if moa_to_actor_detach:
                 actor_condition = jax.lax.stop_gradient(actor_condition)
-            actor_input = jnp.concatenate([embedding, actor_condition], axis=-1)
+            actor_input = jnp.concatenate([policy_embedding, actor_condition], axis=-1)
 
         actor_mean = nn.Dense(
             self.config["FC_DIM_SIZE"],
+            name="actor_0",
             kernel_init=orthogonal(jnp.sqrt(2.0)),
             bias_init=constant(0.0),
         )(actor_input)
         actor_mean = activation(actor_mean)
         actor_mean = nn.Dense(
             self.action_dim,
+            name="actor_out",
             kernel_init=orthogonal(0.01),
             bias_init=constant(0.0),
         )(actor_mean)
@@ -160,12 +202,14 @@ class ActorCriticRNN(ActorCriticBase):
 
         critic = nn.Dense(
             self.config["FC_DIM_SIZE"],
+            name="critic_0",
             kernel_init=orthogonal(jnp.sqrt(2.0)),
             bias_init=constant(0.0),
-        )(embedding)
+        )(policy_embedding)
         critic = activation(critic)
         critic = nn.Dense(
             1,
+            name="critic_out",
             kernel_init=orthogonal(1.0),
             bias_init=constant(0.0),
         )(critic)

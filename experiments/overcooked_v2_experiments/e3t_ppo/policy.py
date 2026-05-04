@@ -36,9 +36,7 @@ def _resolve_obs_shape(config):
         return tuple(obs_shape)
 
     env = jaxmarl.make(config["env"]["ENV_NAME"], **env_kwargs)
-    obs_shape = tuple(env.observation_space().shape)
-    config["env"]["ENV_KWARGS"]["obs_shape"] = obs_shape
-    return obs_shape
+    return tuple(env.observation_space().shape)
 
 
 class E3TPPOPolicy(AbstractPolicy):
