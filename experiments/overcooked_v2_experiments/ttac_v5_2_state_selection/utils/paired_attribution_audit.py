@@ -79,22 +79,30 @@ def compute_base_logits_values(policies, obs, ego_ids, batch_size=512):
     return logits, values
 
 
-def summarize(rows, episode_rows, out_dir: Path):
+def summarize(rows, episode_rows, pair_rows, out_dir: Path):
     deltas = [float(r["episode_delta"]) for r in episode_rows]
-    labels = defaultdict(int)
+    episode_labels = defaultdict(int)
     for r in episode_rows:
-        labels[r["episode_label"]] += 1
+        episode_labels[r["episode_label"]] += 1
+    pair_labels = defaultdict(int)
+    for r in pair_rows:
+        pair_labels[r["pair_label_group"]] += 1
     fields = [
         "latest_target_base_tv", "estimator_entropy", "estimator_kl", "estimator_tv",
         "base_value", "partner_action_changed", "tv_gate_003", "tv_gate_005", "tv_gate_008", "tv_gate_012",
     ]
+    pair_deltas = [float(r["pair_mean_delta"]) for r in pair_rows]
     lines = ["# TTAC v5.2 paired attribution summary", ""]
     lines.append("This audit pairs base and TTAC rewards by exact `policy_labels` and `annotation`, then attaches pair-level reward deltas to sampled agreement-dataset timesteps for fast state-selection analysis.")
     lines.append("")
     lines.append(f"- paired episodes: `{len(episode_rows)}`")
+    lines.append(f"- episode_mean_delta: `{float(np.mean(deltas)) if deltas else 0.0:.4f}`")
+    lines.append(f"- episode beneficial/harmful/neutral: `{episode_labels['beneficial']}` / `{episode_labels['harmful']}` / `{episode_labels['neutral']}`")
+    lines.append(f"- paired policy pairs: `{len(pair_rows)}`")
+    lines.append(f"- pair_mean_delta: `{float(np.mean(pair_deltas)) if pair_deltas else 0.0:.4f}`")
+    lines.append(f"- pair beneficial/harmful/neutral: `{pair_labels['beneficial']}` / `{pair_labels['harmful']}` / `{pair_labels['neutral']}`")
     lines.append(f"- sampled timestep rows: `{len(rows)}`")
-    lines.append(f"- mean_episode_delta: `{float(np.mean(deltas)) if deltas else 0.0:.4f}`")
-    lines.append(f"- beneficial: `{labels['beneficial']}` harmful: `{labels['harmful']}` neutral: `{labels['neutral']}`")
+    lines.append("- sampled timestep labels use the pair-level mean reward delta, not the individual episode delta.")
     lines.append("")
     lines.append("| group | field | mean |")
     lines.append("|---|---|---:|")
@@ -155,7 +163,22 @@ def main():
         episode_rows.append(row)
         pair_delta[key[0]].append(delta)
     pair_mean_delta = {k: float(np.mean(v)) for k, v in pair_delta.items()}
-    pair_label = {k: ("beneficial" if v > 1e-6 else ("harmful" if v < -1e-6 else "neutral")) for k, v in pair_mean_delta.items()}
+    pair_label = {
+        k: ("beneficial" if v > 1e-6 else ("harmful" if v < -1e-6 else "neutral"))
+        for k, v in pair_mean_delta.items()
+    }
+    pair_rows = []
+    for label in sorted(pair_mean_delta):
+        values = pair_delta[label]
+        pair_rows.append({
+            "policy_labels": label,
+            "pair_mean_delta": pair_mean_delta[label],
+            "pair_label_group": pair_label[label],
+            "num_episodes": len(values),
+            "positive_episodes": sum(1 for v in values if v > 1e-6),
+            "negative_episodes": sum(1 for v in values if v < -1e-6),
+            "neutral_episodes": sum(1 for v in values if abs(v) <= 1e-6),
+        })
 
     data = np.load(args.dataset, allow_pickle=False)
     n = len(data["ego_action"])
@@ -224,11 +247,15 @@ def main():
         with (out / "paired_attribution_episodes.csv").open("w", newline="") as f:
             writer = csv.DictWriter(f, fieldnames=list(episode_rows[0].keys()))
             writer.writeheader(); writer.writerows(episode_rows)
+    if pair_rows:
+        with (out / "paired_attribution_pairs.csv").open("w", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=list(pair_rows[0].keys()))
+            writer.writeheader(); writer.writerows(pair_rows)
     if rows:
         with (out / "paired_attribution_steps.csv").open("w", newline="") as f:
             writer = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
             writer.writeheader(); writer.writerows(rows)
-    summarize(rows, episode_rows, out)
+    summarize(rows, episode_rows, pair_rows, out)
     print(f"[paired_attr_fast] wrote {out}")
 
 
