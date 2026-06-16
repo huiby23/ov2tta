@@ -33,6 +33,7 @@ TTAC_TEST_EGO_KL_COEF="${TTAC_TEST_EGO_KL_COEF:-0.01}"
 TTAC_TEST_CUR_KL_COEF="${TTAC_TEST_CUR_KL_COEF:-0.01}"
 TTAC_TEST_HIST_KL_COEF="${TTAC_TEST_HIST_KL_COEF:-0.0}"
 TV_THRESHOLD="${TV_THRESHOLD:-0.03}"
+FUNCTIONAL_EVAL="${FUNCTIONAL_EVAL:-0}"
 
 mkdir -p "${REPORT_DIR}" "${LOG_DIR}"
 QUEUE="${LOG_DIR}/queue.log"
@@ -62,6 +63,7 @@ TTAC_TEST_EGO_KL_COEF=${TTAC_TEST_EGO_KL_COEF}
 TTAC_TEST_CUR_KL_COEF=${TTAC_TEST_CUR_KL_COEF}
 TTAC_TEST_HIST_KL_COEF=${TTAC_TEST_HIST_KL_COEF}
 TV_THRESHOLD=${TV_THRESHOLD}
+FUNCTIONAL_EVAL=${FUNCTIONAL_EVAL}
 EOF
 
 run_shard() {
@@ -69,6 +71,10 @@ run_shard() {
   local count="$2"
   local shard_tag="${OUTPUT_TAG}_shard${start}_${count}"
   local shard_log="${LOG_DIR}/eval_${shard_tag}.log"
+  local functional_args=()
+  if [[ "${FUNCTIONAL_EVAL}" == "1" || "${FUNCTIONAL_EVAL}" == "true" ]]; then
+    functional_args+=(--functional_eval)
+  fi
   log "SHARD_START start=${start} count=${count} mode=${MODE} tag=${shard_tag}"
   "${PYTHON}" experiments/overcooked_v2_experiments/ttac_v5_2_state_selection/utils/visualize_ppo.py \
     --d "${RUN_DIR}" \
@@ -91,6 +97,7 @@ run_shard() {
     --ttac_v5_agreement_coef "${TTAC_V5_AGREEMENT_COEF}" \
     --ttac_v5_support_coef "${TTAC_V5_SUPPORT_COEF}" \
     --ttac_v5_2_tv_threshold "${TV_THRESHOLD}" \
+    "${functional_args[@]}" \
     > "${shard_log}" 2>&1
   log "SHARD_DONE start=${start} count=${count} tag=${shard_tag}"
 }
