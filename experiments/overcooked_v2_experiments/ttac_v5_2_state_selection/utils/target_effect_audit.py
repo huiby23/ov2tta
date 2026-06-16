@@ -227,6 +227,11 @@ AUDIT_MODES = {
     "v5_1_confident_random_history": {"eval_mode": "ttac_v5_1_confident_random_history", "do_update": True, "shuffle_actions": False, "use_loss": True},
     "v5_1_confident_delayed_history": {"eval_mode": "ttac_v5_1_confident_delayed_history", "do_update": True, "shuffle_actions": False, "use_loss": True},
     "v5_1_confident_support": {"eval_mode": "ttac_v5_1_confident_support", "do_update": True, "shuffle_actions": False, "use_loss": True},
+    "v5_2_latest": {"eval_mode": "ttac_v5_2_latest", "do_update": True, "shuffle_actions": False, "use_loss": True},
+    "v5_2_prev_query": {"eval_mode": "ttac_v5_2_prev_query", "do_update": True, "shuffle_actions": False, "use_loss": True},
+    "v5_2_tv_gate": {"eval_mode": "ttac_v5_2_tv_gate", "do_update": True, "shuffle_actions": False, "use_loss": True},
+    "v5_2_value_tv_gate": {"eval_mode": "ttac_v5_2_value_tv_gate", "do_update": True, "shuffle_actions": False, "use_loss": True},
+    "v5_2_change_tv_gate": {"eval_mode": "ttac_v5_2_change_tv_gate", "do_update": True, "shuffle_actions": False, "use_loss": True},
     "kl_only": {
         "eval_mode": "base_no_test_adapt",
         "do_update": False,
@@ -289,6 +294,7 @@ def apply_model_overrides(config, args):
         "TTAC_V5_SUPPORT_COEF": args.ttac_v5_support_coef,
         "TTAC_V5_CONF_MAX_ENTROPY": args.ttac_v5_conf_max_entropy,
         "TTAC_V5_CONF_MIN_TARGET_BASE_TV": args.ttac_v5_conf_min_target_base_tv,
+        "TTAC_V5_2_TV_THRESHOLD": args.ttac_v5_2_tv_threshold,
     }
     for key, value in overrides.items():
         if value is not None:
@@ -637,6 +643,7 @@ def main():
     parser.add_argument("--ttac_v5_support_coef", type=float, default=1.0)
     parser.add_argument("--ttac_v5_conf_max_entropy", type=float, default=1.25)
     parser.add_argument("--ttac_v5_conf_min_target_base_tv", type=float, default=0.03)
+    parser.add_argument("--ttac_v5_2_tv_threshold", type=float, default=0.05)
     args = parser.parse_args()
 
     requested_modes = [mode.strip() for mode in args.modes.split(",") if mode.strip()]
