@@ -13,6 +13,11 @@ class PolicyRollout:
 
 
 @chex.dataclass
+class RewardOnlyRollout:
+    total_reward: chex.Scalar
+
+
+@chex.dataclass
 class DiagnosticRollout:
     obs_seq: chex.ArrayTree
     state_seq: chex.Array
@@ -221,7 +226,9 @@ def get_rollout_with_observations(
     )
 
 
-def get_rollout_functional(policies: FunctionalPolicyPairing, env, key) -> PolicyRollout:
+def get_rollout_functional(
+    policies: FunctionalPolicyPairing, env, key, reward_only: bool = False
+) -> PolicyRollout | RewardOnlyRollout:
     if policies.backend == "ttappo":
         from overcooked_v2_experiments.ttappo.policy import get_functional_rollout
 
@@ -261,7 +268,7 @@ def get_rollout_functional(policies: FunctionalPolicyPairing, env, key) -> Polic
             get_functional_rollout,
         )
 
-        return get_functional_rollout(policies, env, key)
+        return get_functional_rollout(policies, env, key, reward_only=reward_only)
     if policies.backend == "acp":
         from overcooked_v2_experiments.acp.policy import get_functional_rollout
 

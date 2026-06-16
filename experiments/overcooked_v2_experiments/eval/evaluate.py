@@ -115,12 +115,10 @@ def eval_pairing(
                 return RewardOnlyRollout(
                     total_reward=get_rollout_reward_only(policies, env, key)
                 )
-            if no_viz and not isinstance(policies, FunctionalPolicyPairing):
-                return RewardOnlyRollout(
-                    total_reward=get_rollout_reward_only(policies, env, key)
-                )
             if isinstance(policies, FunctionalPolicyPairing):
-                rollout = get_rollout_functional(policies, env, key)
+                rollout = get_rollout_functional(
+                    policies, env, key, reward_only=no_viz
+                )
             else:
                 rollout = get_rollout(policies, env, key)
 
@@ -140,7 +138,9 @@ def eval_pairing(
                     total_reward=get_rollout_reward_only(policies, env, key)
                 )
             if isinstance(policies, FunctionalPolicyPairing):
-                return get_rollout_functional(policies, env, key)
+                return get_rollout_functional(
+                    policies, env, key, reward_only=no_viz
+                )
             return get_rollout(policies, env, key)
 
         keys = jax.random.split(key, num_seeds)

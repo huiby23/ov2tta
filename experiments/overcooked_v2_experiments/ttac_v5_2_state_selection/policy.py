@@ -1101,7 +1101,9 @@ def _functional_init_ttac_state(spec, config, obs_shape, history_len):
     )
 
 
-def get_functional_rollout(policies: FunctionalPolicyPairing, env, key):
+def get_functional_rollout(
+    policies: FunctionalPolicyPairing, env, key, reward_only: bool = False
+):
     """Functional TTAC rollout for fast evaluation.
 
     This backend intentionally supports the current v5.2 evaluation line first:
@@ -1116,6 +1118,9 @@ def get_functional_rollout(policies: FunctionalPolicyPairing, env, key):
     history_len = int(model_config.get("TTAC_HISTORY_LEN", 50))
     action_dim = int(env.action_space(env.agents[0]).n)
     obs_shape = tuple(env.observation_space().shape)
+    hist_kl_coef = float(model_config.get("TTAC_TEST_HIST_KL_COEF", 0.05))
+    ego_kl_coef = float(model_config.get("TTAC_TEST_EGO_KL_COEF", 0.05))
+    cur_kl_coef = float(model_config.get("TTAC_TEST_CUR_KL_COEF", 0.05))
 
     supported_modes = {
         "base_no_test_adapt",
@@ -1164,12 +1169,10 @@ def get_functional_rollout(policies: FunctionalPolicyPairing, env, key):
         next_base_hstate, pi, _, _ = _apply_policy_network(
             network, state.params, state.base_hstate, ac_in
         )
-        action = jax.lax.cond(
-            jnp.asarray(spec.stochastic),
-            lambda _: pi.sample(seed=sample_key)[0, 0],
-            lambda _: jnp.argmax(pi.probs, axis=-1)[0, 0],
-            operand=None,
-        )
+        if spec.stochastic:
+            action = pi.sample(seed=sample_key)[0, 0]
+        else:
+            action = jnp.argmax(pi.probs, axis=-1)[0, 0]
         next_state = state.replace(
             base_hstate=next_base_hstate,
             last_ego_obs=obs_f,
@@ -1201,12 +1204,6 @@ def get_functional_rollout(policies: FunctionalPolicyPairing, env, key):
         )
 
     def _ttac_v5_2_loss(params, state, eval_mode):
-        hist_logits, _hist_value, hist_aux = _apply_batch_fn(
-            params, state.partner_obs_buffer, 1.0
-        )
-        ego_logits, ego_value, ego_aux = _apply_batch_fn(
-            params, state.ego_obs_buffer, 1.0
-        )
         agreement_estimator_params = model_config.get("TTAC_V5_ESTIMATOR", None)
         if agreement_estimator_params is None:
             agreement_loss = jnp.array(0.0, dtype=jnp.float32)
@@ -1218,39 +1215,45 @@ def get_functional_rollout(policies: FunctionalPolicyPairing, env, key):
             chron_actions = state.partner_action_buffer[order]
             valid_chron = jnp.arange(history_len) >= (history_len - state.count)
             q_action_history = jnp.where(valid_chron, chron_actions, 0)[None, :]
-            query_obs = state.ego_obs_buffer[order]
-            query_partner_obs = state.partner_obs_buffer[order]
-            query_ego_logits = ego_logits[order]
-            query_base_logits = ego_aux["base_logits"][order, 0, :]
-            repeated_history = jnp.repeat(q_action_history, history_len, axis=0)
+            query_pos = _select_v5_2_query_pos(
+                eval_mode, history_len, state.count, state.global_step
+            )
+            selected_obs = jnp.take(state.ego_obs_buffer[order], query_pos, axis=0)
+            selected_partner_obs = jnp.take(
+                state.partner_obs_buffer[order], query_pos, axis=0
+            )
+            selected_logits, _, selected_aux = _apply_batch_fn(
+                params, selected_obs[None, ...], 1.0
+            )
             estimator_logits = apply_agreement_estimator(
                 agreement_estimator_params,
-                query_obs,
-                query_partner_obs,
-                repeated_history,
+                selected_obs[None, ...],
+                selected_partner_obs[None, ...],
+                q_action_history,
                 action_dim,
             )
             estimator_probs = jax.lax.stop_gradient(
                 jax.nn.softmax(estimator_logits, axis=-1)
             )
-            query_ego_log_probs = jax.nn.log_softmax(query_ego_logits, axis=-1)
-            query_base_probs = jax.nn.softmax(query_base_logits, axis=-1)
-            per_query_ce = -jnp.sum(estimator_probs * query_ego_log_probs, axis=-1)
-            per_query_target_base_tv = 0.5 * jnp.sum(
-                jnp.abs(estimator_probs - query_base_probs), axis=-1
+            selected_log_probs = jax.nn.log_softmax(selected_logits, axis=-1)
+            selected_base_probs = jax.nn.softmax(
+                selected_aux["base_logits"][:, 0, :], axis=-1
             )
-            valid_query_mask = valid_chron.astype(jnp.float32)
-            query_pos = _select_v5_2_query_pos(
-                eval_mode, history_len, state.count, state.global_step
+            selected_ce = -jnp.sum(estimator_probs * selected_log_probs, axis=-1)[0]
+            selected_tv = 0.5 * jnp.sum(
+                jnp.abs(estimator_probs - selected_base_probs), axis=-1
+            )[0]
+            selected_valid = jnp.take(
+                valid_chron.astype(jnp.float32), query_pos, axis=0
             )
-            selected_ce = jnp.take(per_query_ce, query_pos, axis=0)
-            selected_tv = jnp.take(per_query_target_base_tv, query_pos, axis=0)
-            selected_valid = jnp.take(valid_query_mask, query_pos, axis=0)
             threshold = jnp.asarray(
                 model_config.get("TTAC_V5_2_TV_THRESHOLD", 0.05), dtype=jnp.float32
             )
             tv_gate = selected_valid * (selected_tv >= threshold).astype(jnp.float32)
-            mode_loss_gate = jnp.where(eval_mode == "ttac_v5_2_tv_gate", tv_gate, 1.0)
+            if eval_mode == "ttac_v5_2_tv_gate":
+                mode_loss_gate = tv_gate
+            else:
+                mode_loss_gate = jnp.array(1.0, dtype=jnp.float32)
             agreement_loss = (
                 jnp.asarray(
                     model_config.get("TTAC_V5_AGREEMENT_COEF", 1.0),
@@ -1259,28 +1262,37 @@ def get_functional_rollout(policies: FunctionalPolicyPairing, env, key):
                 * selected_ce
             )
 
-        cur_logits, _, cur_aux = _apply_batch_fn(
-            params, state.last_ego_obs[None, ...], 1.0
-        )
-        hist_kl = _masked_mean(
-            _categorical_symmetric_kl(hist_aux["base_logits"][:, 0, :], hist_logits),
-            state.valid_mask,
-        )
-        ego_kl = _masked_mean(
-            _categorical_symmetric_kl(ego_aux["base_logits"][:, 0, :], ego_logits),
-            state.valid_mask,
-        )
-        cur_kl = _categorical_symmetric_kl(
-            cur_aux["base_logits"][:, 0, :], cur_logits
-        ).mean()
-        raw_loss = agreement_loss + (
-            jnp.asarray(model_config.get("TTAC_TEST_HIST_KL_COEF", 0.05))
-            * hist_kl
-            + jnp.asarray(model_config.get("TTAC_TEST_EGO_KL_COEF", 0.05))
-            * ego_kl
-            + jnp.asarray(model_config.get("TTAC_TEST_CUR_KL_COEF", 0.05))
-            * cur_kl
-        )
+        raw_loss = agreement_loss
+        if hist_kl_coef != 0.0:
+            hist_logits, _, hist_aux = _apply_batch_fn(
+                params, state.partner_obs_buffer, 1.0
+            )
+            hist_kl = _masked_mean(
+                _categorical_symmetric_kl(
+                    hist_aux["base_logits"][:, 0, :], hist_logits
+                ),
+                state.valid_mask,
+            )
+            raw_loss = raw_loss + jnp.asarray(hist_kl_coef) * hist_kl
+        if ego_kl_coef != 0.0:
+            ego_logits, _, ego_aux = _apply_batch_fn(
+                params, state.ego_obs_buffer, 1.0
+            )
+            ego_kl = _masked_mean(
+                _categorical_symmetric_kl(
+                    ego_aux["base_logits"][:, 0, :], ego_logits
+                ),
+                state.valid_mask,
+            )
+            raw_loss = raw_loss + jnp.asarray(ego_kl_coef) * ego_kl
+        if cur_kl_coef != 0.0:
+            cur_logits, _, cur_aux = _apply_batch_fn(
+                params, state.last_ego_obs[None, ...], 1.0
+            )
+            cur_kl = _categorical_symmetric_kl(
+                cur_aux["base_logits"][:, 0, :], cur_logits
+            ).mean()
+            raw_loss = raw_loss + jnp.asarray(cur_kl_coef) * cur_kl
         return mode_loss_gate * raw_loss
 
     def _update_policy_state(spec, adapter_mask, state, partner_obs, partner_action, done):
@@ -1292,7 +1304,6 @@ def get_functional_rollout(policies: FunctionalPolicyPairing, env, key):
             action_dim,
         )
         state = _append_history_fn(state, partner_obs, memory_action)
-        should_update = jnp.asarray(spec.eval_mode != "base_no_test_adapt")
         lr = float(model_config.get("TTAC_TEST_LR", 0.001))
         steps = int(model_config.get("TTAC_TEST_UPDATE_STEPS", 1))
 
@@ -1305,13 +1316,10 @@ def get_functional_rollout(policies: FunctionalPolicyPairing, env, key):
             updates = jax.tree_util.tree_map(lambda g: -lr * g, grads)
             return optax.apply_updates(params, updates), None
 
-        updated_params, _ = jax.lax.scan(_one_update, state.params, None, steps)
-        next_params = jax.lax.cond(
-            should_update,
-            lambda _: updated_params,
-            lambda _: state.params,
-            operand=None,
-        )
+        if spec.eval_mode == "base_no_test_adapt":
+            next_params = state.params
+        else:
+            next_params, _ = jax.lax.scan(_one_update, state.params, None, steps)
         return state.replace(
             params=next_params,
             valid_mask=jnp.where(done, jnp.zeros_like(state.valid_mask), state.valid_mask),
@@ -1370,6 +1378,8 @@ def get_functional_rollout(policies: FunctionalPolicyPairing, env, key):
             total_reward + reward["agent_0"],
             updated_hstate,
         )
+        if reward_only:
+            return carry, None
         return carry, (next_env_state, actions)
 
     key, key_r = jax.random.split(key, 2)
@@ -1378,9 +1388,17 @@ def get_functional_rollout(policies: FunctionalPolicyPairing, env, key):
     init_done["__all__"] = False
     keys = jax.random.split(key, env.max_steps)
     carry = (obs, env_state, init_done, 0.0, init_hstate)
-    carry, (state_seq, actions_seq) = jax.lax.scan(_perform_step, carry, keys)
+    carry, scan_output = jax.lax.scan(_perform_step, carry, keys)
 
-    from overcooked_v2_experiments.eval.rollout import PolicyRollout
+    from overcooked_v2_experiments.eval.rollout import (
+        PolicyRollout,
+        RewardOnlyRollout,
+    )
+
+    if reward_only:
+        return RewardOnlyRollout(total_reward=carry[-2])
+
+    state_seq, actions_seq = scan_output
 
     return PolicyRollout(
         state_seq=state_seq,
