@@ -19,6 +19,7 @@ sys.path.append(os.path.dirname(os.path.dirname(DIR)))
 
 from overcooked_v2_experiments.ttac_v5_2_state_selection.policy import (
     PPOParams,
+    policy_checkoints_to_functional_policy_pairing,
     policy_checkoints_to_policy_pairing,
 )
 from overcooked_v2_experiments.ttac_v5_2_state_selection.utils.store import (
@@ -52,6 +53,7 @@ def visualize_ppo_policy(
     online_eval_pairings_per_chunk=9,
     pairing_start=0,
     max_pairings=None,
+    functional_eval=False,
 ):
     if cross and not final_only:
         raise ValueError("Cannot run cross play with all checkpoints")
@@ -143,9 +145,14 @@ def visualize_ppo_policy(
         env_kwargs_no_layout = copy.deepcopy(env_kwargs)
         layout_name = env_kwargs_no_layout.pop("layout")
 
-        pairing = policy_checkoints_to_policy_pairing(
-            pairing, config, stochastic=not greedy, eval_mode=ttac_mode
-        )
+        if functional_eval:
+            pairing = policy_checkoints_to_functional_policy_pairing(
+                pairing, config, stochastic=not greedy, eval_mode=ttac_mode
+            )
+        else:
+            pairing = policy_checkoints_to_policy_pairing(
+                pairing, config, stochastic=not greedy, eval_mode=ttac_mode
+            )
 
         return eval_pairing(
             pairing,
@@ -158,7 +165,10 @@ def visualize_ppo_policy(
         )
 
     # policy_params = jax.vmap(_policy_viz)(policy_params)
-    num_devices = len(jax.devices("gpu"))
+    try:
+        num_devices = len(jax.devices("gpu"))
+    except RuntimeError:
+        num_devices = len(jax.devices())
     num_pairings = jax.tree_util.tree_leaves(policy_pairings)[0].shape[0]
 
     def _resolve_eval_batches(num_items, requested_batches):
@@ -286,6 +296,11 @@ if __name__ == "__main__":
     parser.add_argument("--online_eval_pairings_per_chunk", type=int, default=9)
     parser.add_argument("--pairing_start", type=int, default=0)
     parser.add_argument("--max_pairings", type=int)
+    parser.add_argument(
+        "--functional_eval",
+        action="store_true",
+        help="Use the functional TTAC v5.2 evaluator backend instead of Policy objects.",
+    )
 
     args = parser.parse_args()
 
@@ -371,4 +386,5 @@ if __name__ == "__main__":
             online_eval_pairings_per_chunk=args.online_eval_pairings_per_chunk,
             pairing_start=args.pairing_start,
             max_pairings=args.max_pairings,
+            functional_eval=args.functional_eval,
         )

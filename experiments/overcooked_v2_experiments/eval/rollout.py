@@ -256,6 +256,12 @@ def get_rollout_functional(policies: FunctionalPolicyPairing, env, key) -> Polic
         )
 
         return get_functional_rollout(policies, env, key)
+    if policies.backend == "ttac_v5_2_state_selection":
+        from overcooked_v2_experiments.ttac_v5_2_state_selection.policy import (
+            get_functional_rollout,
+        )
+
+        return get_functional_rollout(policies, env, key)
     if policies.backend == "acp":
         from overcooked_v2_experiments.acp.policy import get_functional_rollout
 

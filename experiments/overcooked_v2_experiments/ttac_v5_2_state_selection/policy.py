@@ -9,7 +9,11 @@ from flax import core, struct
 from flax.traverse_util import flatten_dict, unflatten_dict
 from jaxmarl.environments.overcooked_v2.overcooked import OvercookedV2
 
-from overcooked_v2_experiments.eval.policy import AbstractPolicy, PolicyPairing
+from overcooked_v2_experiments.eval.policy import (
+    AbstractPolicy,
+    FunctionalPolicyPairing,
+    PolicyPairing,
+)
 from overcooked_v2_experiments.ttac_v5_2_state_selection.models.abstract import ActorCriticBase
 from overcooked_v2_experiments.ttac_v5_2_state_selection.models.model import get_actor_critic, initialize_carry
 from overcooked_v2_experiments.ttac_v5_2_state_selection.utils.surrogate_heads import (
@@ -44,6 +48,13 @@ class TTACPolicyState:
     prev_memory_action_buffer: jnp.ndarray
     time_buffer: jnp.ndarray
     global_step: jnp.ndarray
+
+
+@struct.dataclass
+class TTACFunctionalPolicySpec:
+    params: core.FrozenDict[str, Any]
+    eval_mode: str = struct.field(pytree_node=False, default="base_no_test_adapt")
+    stochastic: bool = struct.field(pytree_node=False, default=True)
 
 
 EVAL_MODES = (
@@ -1040,3 +1051,339 @@ def policy_checkoints_to_policy_pairing(
             )
         )
     return PolicyPairing(*policies)
+
+
+def policy_checkoints_to_functional_policy_pairing(
+    checkpoints: PPOParams,
+    config,
+    stochastic: bool = True,
+    eval_mode: str = "base_no_test_adapt",
+):
+    policies = []
+    for checkpoint in checkpoints:
+        params = (
+            checkpoint.params
+            if isinstance(checkpoint.params, core.FrozenDict)
+            else core.freeze(checkpoint.params)
+        )
+        policies.append(
+            TTACFunctionalPolicySpec(
+                params=params,
+                eval_mode=eval_mode,
+                stochastic=stochastic,
+            )
+        )
+    return FunctionalPolicyPairing(
+        tuple(policies),
+        backend="ttac_v5_2_state_selection",
+        config=config,
+    )
+
+
+def _functional_init_ttac_state(spec, config, obs_shape, history_len):
+    return TTACPolicyState(
+        params=spec.params,
+        base_hstate=initialize_carry(config, 1),
+        last_ego_obs=jnp.zeros(obs_shape, dtype=jnp.float32),
+        ego_obs_buffer=jnp.zeros((history_len,) + obs_shape, dtype=jnp.float32),
+        ego_action_buffer=jnp.zeros((history_len,), dtype=jnp.int32),
+        partner_obs_buffer=jnp.zeros((history_len,) + obs_shape, dtype=jnp.float32),
+        partner_action_buffer=jnp.zeros((history_len,), dtype=jnp.int32),
+        valid_mask=jnp.zeros((history_len,), dtype=jnp.bool_),
+        cursor=jnp.array(0, dtype=jnp.int32),
+        count=jnp.array(0, dtype=jnp.int32),
+        cached_self_action=jnp.array(0, dtype=jnp.int32),
+        prev_partner_action=jnp.array(0, dtype=jnp.int32),
+        prev_memory_action=jnp.array(0, dtype=jnp.int32),
+        prev_memory_action_buffer=jnp.zeros((history_len,), dtype=jnp.int32),
+        time_buffer=jnp.zeros((history_len,), dtype=jnp.int32),
+        global_step=jnp.array(0, dtype=jnp.int32),
+    )
+
+
+def get_functional_rollout(policies: FunctionalPolicyPairing, env, key):
+    """Functional TTAC rollout for fast evaluation.
+
+    This backend intentionally supports the current v5.2 evaluation line first:
+    base/no-adapt, latest-query agreement, and TV-gated agreement. It avoids the
+    Python PolicyPairing/PPOPolicy object path inside rollout while preserving the
+    same network, history buffers, adapter-only updates, and policy-level KL terms.
+    """
+
+    config = policies.config
+    model_config = config["model"]
+    network = get_actor_critic(config)
+    history_len = int(model_config.get("TTAC_HISTORY_LEN", 50))
+    action_dim = int(env.action_space(env.agents[0]).n)
+    obs_shape = tuple(env.observation_space().shape)
+
+    supported_modes = {
+        "base_no_test_adapt",
+        "ttac_v5_2_latest",
+        "ttac_v5_2_prev_query",
+        "ttac_v5_2_oldest_query",
+        "ttac_v5_2_pseudorandom_query",
+        "ttac_v5_2_tv_gate",
+    }
+    for spec in policies.policies:
+        if spec.eval_mode not in supported_modes:
+            raise ValueError(
+                "Functional TTAC v5.2 eval currently supports only "
+                f"{sorted(supported_modes)}, got {spec.eval_mode}"
+            )
+
+    adapter_masks = tuple(_make_adapter_mask(spec.params) for spec in policies.policies)
+
+    init_hstate = {
+        f"agent_{i}": _functional_init_ttac_state(
+            spec, config, obs_shape, history_len
+        )
+        for i, spec in enumerate(policies.policies)
+    }
+
+    def _apply_batch_fn(params, obs_batch, adapter_readout_scale=1.0):
+        done_batch = jnp.zeros((obs_batch.shape[0], 1), dtype=jnp.bool_)
+        ac_in = (
+            obs_batch[:, None, ...],
+            done_batch,
+            jnp.asarray(adapter_readout_scale, dtype=jnp.float32),
+        )
+        _, pi, value, aux = _apply_policy_network(network, params, None, ac_in)
+        return pi.logits[:, 0, :], value[:, 0], aux
+
+    def _compute_action_for_policy(spec, state, obs, done, sample_key):
+        obs_f = jnp.asarray(obs, dtype=jnp.float32)
+        ac_in = (
+            obs_f[jnp.newaxis, jnp.newaxis, ...],
+            jnp.asarray(done)[jnp.newaxis, jnp.newaxis],
+            jnp.asarray(
+                0.0 if spec.eval_mode == "ttac_adapter_off" else 1.0,
+                dtype=jnp.float32,
+            ),
+        )
+        next_base_hstate, pi, _, _ = _apply_policy_network(
+            network, state.params, state.base_hstate, ac_in
+        )
+        action = jax.lax.cond(
+            jnp.asarray(spec.stochastic),
+            lambda _: pi.sample(seed=sample_key)[0, 0],
+            lambda _: jnp.argmax(pi.probs, axis=-1)[0, 0],
+            operand=None,
+        )
+        next_state = state.replace(
+            base_hstate=next_base_hstate,
+            last_ego_obs=obs_f,
+            cached_self_action=action,
+        )
+        return action, next_state
+
+    def _append_history_fn(state, partner_obs, memory_action):
+        idx = state.cursor % history_len
+        memory_action = jnp.asarray(memory_action, dtype=jnp.int32)
+        return state.replace(
+            ego_obs_buffer=state.ego_obs_buffer.at[idx].set(state.last_ego_obs),
+            ego_action_buffer=state.ego_action_buffer.at[idx].set(
+                state.cached_self_action
+            ),
+            partner_obs_buffer=state.partner_obs_buffer.at[idx].set(
+                jnp.asarray(partner_obs, dtype=jnp.float32)
+            ),
+            partner_action_buffer=state.partner_action_buffer.at[idx].set(memory_action),
+            prev_memory_action_buffer=state.prev_memory_action_buffer.at[idx].set(
+                state.prev_memory_action
+            ),
+            time_buffer=state.time_buffer.at[idx].set(state.global_step),
+            valid_mask=state.valid_mask.at[idx].set(True),
+            cursor=(state.cursor + 1) % history_len,
+            count=jnp.minimum(state.count + 1, history_len),
+            prev_memory_action=memory_action,
+            global_step=state.global_step + jnp.array(1, dtype=jnp.int32),
+        )
+
+    def _ttac_v5_2_loss(params, state, eval_mode):
+        hist_logits, _hist_value, hist_aux = _apply_batch_fn(
+            params, state.partner_obs_buffer, 1.0
+        )
+        ego_logits, ego_value, ego_aux = _apply_batch_fn(
+            params, state.ego_obs_buffer, 1.0
+        )
+        agreement_estimator_params = model_config.get("TTAC_V5_ESTIMATOR", None)
+        if agreement_estimator_params is None:
+            agreement_loss = jnp.array(0.0, dtype=jnp.float32)
+            mode_loss_gate = jnp.array(1.0, dtype=jnp.float32)
+        else:
+            order = (
+                state.cursor - history_len + jnp.arange(history_len)
+            ) % history_len
+            chron_actions = state.partner_action_buffer[order]
+            valid_chron = jnp.arange(history_len) >= (history_len - state.count)
+            q_action_history = jnp.where(valid_chron, chron_actions, 0)[None, :]
+            query_obs = state.ego_obs_buffer[order]
+            query_partner_obs = state.partner_obs_buffer[order]
+            query_ego_logits = ego_logits[order]
+            query_base_logits = ego_aux["base_logits"][order, 0, :]
+            repeated_history = jnp.repeat(q_action_history, history_len, axis=0)
+            estimator_logits = apply_agreement_estimator(
+                agreement_estimator_params,
+                query_obs,
+                query_partner_obs,
+                repeated_history,
+                action_dim,
+            )
+            estimator_probs = jax.lax.stop_gradient(
+                jax.nn.softmax(estimator_logits, axis=-1)
+            )
+            query_ego_log_probs = jax.nn.log_softmax(query_ego_logits, axis=-1)
+            query_base_probs = jax.nn.softmax(query_base_logits, axis=-1)
+            per_query_ce = -jnp.sum(estimator_probs * query_ego_log_probs, axis=-1)
+            per_query_target_base_tv = 0.5 * jnp.sum(
+                jnp.abs(estimator_probs - query_base_probs), axis=-1
+            )
+            valid_query_mask = valid_chron.astype(jnp.float32)
+            query_pos = _select_v5_2_query_pos(
+                eval_mode, history_len, state.count, state.global_step
+            )
+            selected_ce = jnp.take(per_query_ce, query_pos, axis=0)
+            selected_tv = jnp.take(per_query_target_base_tv, query_pos, axis=0)
+            selected_valid = jnp.take(valid_query_mask, query_pos, axis=0)
+            threshold = jnp.asarray(
+                model_config.get("TTAC_V5_2_TV_THRESHOLD", 0.05), dtype=jnp.float32
+            )
+            tv_gate = selected_valid * (selected_tv >= threshold).astype(jnp.float32)
+            mode_loss_gate = jnp.where(eval_mode == "ttac_v5_2_tv_gate", tv_gate, 1.0)
+            agreement_loss = (
+                jnp.asarray(
+                    model_config.get("TTAC_V5_AGREEMENT_COEF", 1.0),
+                    dtype=jnp.float32,
+                )
+                * selected_ce
+            )
+
+        cur_logits, _, cur_aux = _apply_batch_fn(
+            params, state.last_ego_obs[None, ...], 1.0
+        )
+        hist_kl = _masked_mean(
+            _categorical_symmetric_kl(hist_aux["base_logits"][:, 0, :], hist_logits),
+            state.valid_mask,
+        )
+        ego_kl = _masked_mean(
+            _categorical_symmetric_kl(ego_aux["base_logits"][:, 0, :], ego_logits),
+            state.valid_mask,
+        )
+        cur_kl = _categorical_symmetric_kl(
+            cur_aux["base_logits"][:, 0, :], cur_logits
+        ).mean()
+        raw_loss = agreement_loss + (
+            jnp.asarray(model_config.get("TTAC_TEST_HIST_KL_COEF", 0.05))
+            * hist_kl
+            + jnp.asarray(model_config.get("TTAC_TEST_EGO_KL_COEF", 0.05))
+            * ego_kl
+            + jnp.asarray(model_config.get("TTAC_TEST_CUR_KL_COEF", 0.05))
+            * cur_kl
+        )
+        return mode_loss_gate * raw_loss
+
+    def _update_policy_state(spec, adapter_mask, state, partner_obs, partner_action, done):
+        memory_action, true_partner_action = _resolve_history_action(
+            spec.eval_mode,
+            jnp.asarray(partner_action),
+            state.cached_self_action,
+            state.prev_partner_action,
+            action_dim,
+        )
+        state = _append_history_fn(state, partner_obs, memory_action)
+        should_update = jnp.asarray(spec.eval_mode != "base_no_test_adapt")
+        lr = float(model_config.get("TTAC_TEST_LR", 0.001))
+        steps = int(model_config.get("TTAC_TEST_UPDATE_STEPS", 1))
+
+        def _one_update(params, _):
+            loss, grads = jax.value_and_grad(_ttac_v5_2_loss)(
+                params, state, spec.eval_mode
+            )
+            del loss
+            grads = _mask_grads(grads, adapter_mask)
+            updates = jax.tree_util.tree_map(lambda g: -lr * g, grads)
+            return optax.apply_updates(params, updates), None
+
+        updated_params, _ = jax.lax.scan(_one_update, state.params, None, steps)
+        next_params = jax.lax.cond(
+            should_update,
+            lambda _: updated_params,
+            lambda _: state.params,
+            operand=None,
+        )
+        return state.replace(
+            params=next_params,
+            valid_mask=jnp.where(done, jnp.zeros_like(state.valid_mask), state.valid_mask),
+            cursor=jnp.where(done, jnp.array(0, dtype=jnp.int32), state.cursor),
+            count=jnp.where(done, jnp.array(0, dtype=jnp.int32), state.count),
+            global_step=jnp.where(
+                done, jnp.array(0, dtype=jnp.int32), state.global_step
+            ),
+            prev_partner_action=true_partner_action,
+            prev_memory_action=jnp.where(
+                done, jnp.array(0, dtype=jnp.int32), state.prev_memory_action
+            ),
+        )
+
+    @jax.jit
+    def _perform_step(carry, step_key):
+        obs, env_state, done, total_reward, hstate = carry
+        key_sample, key_step = jax.random.split(step_key, 2)
+        sample_keys = jax.random.split(key_sample, env.num_agents)
+
+        actions = {}
+        next_hstate = {}
+        for i, spec in enumerate(policies.policies):
+            agent_id = f"agent_{i}"
+            action, policy_state = _compute_action_for_policy(
+                spec,
+                hstate[agent_id],
+                obs[agent_id],
+                done[agent_id],
+                sample_keys[i],
+            )
+            actions[agent_id] = action
+            next_hstate[agent_id] = policy_state
+
+        next_obs, next_env_state, reward, next_done, _ = env.step(
+            key_step, env_state, actions
+        )
+
+        updated_hstate = {}
+        for i, spec in enumerate(policies.policies):
+            agent_id = f"agent_{i}"
+            partner_id = f"agent_{1 - i}"
+            updated_hstate[agent_id] = _update_policy_state(
+                spec,
+                adapter_masks[i],
+                next_hstate[agent_id],
+                obs[partner_id],
+                actions[partner_id],
+                next_done[agent_id],
+            )
+
+        carry = (
+            next_obs,
+            next_env_state,
+            next_done,
+            total_reward + reward["agent_0"],
+            updated_hstate,
+        )
+        return carry, (next_env_state, actions)
+
+    key, key_r = jax.random.split(key, 2)
+    obs, env_state = env.reset(key_r)
+    init_done = {f"agent_{i}": False for i in range(env.num_agents)}
+    init_done["__all__"] = False
+    keys = jax.random.split(key, env.max_steps)
+    carry = (obs, env_state, init_done, 0.0, init_hstate)
+    carry, (state_seq, actions_seq) = jax.lax.scan(_perform_step, carry, keys)
+
+    from overcooked_v2_experiments.eval.rollout import PolicyRollout
+
+    return PolicyRollout(
+        state_seq=state_seq,
+        actions_seq=actions_seq,
+        total_reward=carry[-2],
+    )
