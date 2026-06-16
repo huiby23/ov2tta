@@ -59,7 +59,7 @@ class CNN(nn.Module):
 
         x = x.reshape((x.shape[0], -1))
         # x = x.flatten()
-        print("CNN shapes", x.shape)
+        # Debug shape print disabled for diagnostics throughput.
 
         x = nn.Dense(
             features=self.output_size,
@@ -103,7 +103,7 @@ class CNNSimple(nn.Module):
 
         x = x.reshape((x.shape[0], -1))
         # x = x.flatten()
-        print("CNN shapes", x.shape)
+        # Debug shape print disabled for diagnostics throughput.
 
         x = nn.Dense(
             features=self.output_size,

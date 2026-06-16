@@ -163,10 +163,27 @@ def make_train(
     env_config = config["env"]
     model_config = config["model"]
 
+    critic_input_mode = model_config.get(
+        "CRITIC_INPUT_MODE", config.get("CRITIC_INPUT_MODE", "world_state")
+    )
+    critic_input_modes = {"world_state": 0, "local_obs": 1, "zero_world_state": 2}
+    if critic_input_mode not in critic_input_modes:
+        raise ValueError(
+            "model.CRITIC_INPUT_MODE must be one of "
+            f"{sorted(critic_input_modes)}, got {critic_input_mode!r}"
+        )
+    critic_input_mode_id = critic_input_modes[critic_input_mode]
 
     env = jaxmarl.make(env_config["ENV_NAME"], **env_config["ENV_KWARGS"])
     env = OvercookedV2WorldStateWrapper(env)
     env = OvercookedV2LogWrapper(env, replace_info=False)
+
+    local_obs_critic_size = int(np.prod(env.observation_space().shape))
+    critic_input_size = (
+        local_obs_critic_size
+        if critic_input_mode == "local_obs"
+        else env.world_state_size()
+    )
 
     model_config["NUM_ACTORS"] = env.num_agents * model_config["NUM_ENVS"]
     model_config["NUM_UPDATES"] = (
@@ -238,6 +255,19 @@ def make_train(
     train_mask_dict = {a: train_idxs == i for i, a in enumerate(env.agents)}
     train_mask_flat = batchify(train_mask_dict, env.agents, model_config["NUM_ACTORS"]).squeeze()
 
+    def _world_state_features(obs):
+        return obs["world_state"].swapaxes(0, 1).reshape(
+            (model_config["NUM_ACTORS"], -1)
+        )
+
+    def _critic_features(obs, obs_batch):
+        world_state = _world_state_features(obs)
+        if critic_input_mode == "world_state":
+            return world_state
+        if critic_input_mode == "zero_world_state":
+            return jnp.zeros_like(world_state)
+        return obs_batch.reshape((model_config["NUM_ACTORS"], -1)).astype(jnp.float32)
+
     use_population_annealing = False
     if "POPULATION_ANNEAL_HORIZON" in config:
         use_population_annealing = True
@@ -274,7 +304,7 @@ def make_train(
         actor_params = actor_network.init(actor_rng, actor_init_hstate, actor_init_x)
 
         critic_init_x = (
-            jnp.zeros((1, model_config["NUM_ENVS"], env.world_state_size())),
+            jnp.zeros((1, model_config["NUM_ENVS"], critic_input_size)),
             jnp.zeros((1, model_config["NUM_ENVS"])),
         )
         critic_init_hstate = initialize_carry(config, model_config["NUM_ENVS"])
@@ -448,11 +478,9 @@ def make_train(
                         action_pick_mask = _make_train_mask(population_annealing_mask)
                     action = jnp.where(action_pick_mask, action, pop_actions)
 
-                world_state = last_obs["world_state"].swapaxes(0, 1).reshape(
-                    (model_config["NUM_ACTORS"], -1)
-                )
+                critic_features = _critic_features(last_obs, obs_batch)
                 critic_in = (
-                    world_state[jnp.newaxis, :],
+                    critic_features[jnp.newaxis, :],
                     last_done[jnp.newaxis, :],
                 )
                 critic_hstate, value = critic_train_state.apply_fn(
@@ -527,7 +555,7 @@ def make_train(
                     reward=batchify(reward, env.agents, model_config["NUM_ACTORS"]).squeeze(),
                     log_prob=log_prob.squeeze(),
                     obs=obs_batch,
-                    world_state=world_state,
+                    world_state=critic_features,
                     info=info,
                     train_mask=action_pick_mask,
                 )
@@ -577,11 +605,12 @@ def make_train(
                 next_fcp_pop_agent_idxs,
                 rng,
             ) = env_step_state
-            last_world_state = last_obs["world_state"].swapaxes(0, 1).reshape(
-                (model_config["NUM_ACTORS"], -1)
+            last_obs_batch = jnp.stack([last_obs[a] for a in env.agents]).reshape(
+                -1, *env.observation_space().shape
             )
+            last_critic_features = _critic_features(last_obs, last_obs_batch)
             critic_in = (
-                last_world_state[jnp.newaxis, :],
+                last_critic_features[jnp.newaxis, :],
                 last_done[jnp.newaxis, :],
             )
             _, last_val = critic_train_state.apply_fn(
@@ -793,6 +822,9 @@ def make_train(
             metric["update_step"] = update_step
             metric["env_step"] = (
                 update_step * model_config["NUM_STEPS"] * model_config["NUM_ENVS"]
+            )
+            metric["critic_input_mode_id"] = jnp.array(
+                critic_input_mode_id, dtype=jnp.float32
             )
 
             def callback(metric, original_seed):

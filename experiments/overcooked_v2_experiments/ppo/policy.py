@@ -107,9 +107,11 @@ class PPOPolicy(AbstractPolicy):
         return initialize_carry(self.config, batch_size)
 
 
-def policy_checkoints_to_policy_pairing(checkpoints: PPOParams, config):
+def policy_checkoints_to_policy_pairing(
+    checkpoints: PPOParams, config, stochastic: bool = True
+):
     policies = []
     for checkpoint in checkpoints:
-        policies.append(PPOPolicy(checkpoint.params, config))
+        policies.append(PPOPolicy(checkpoint.params, config, stochastic=stochastic))
 
     return PolicyPairing(*policies)

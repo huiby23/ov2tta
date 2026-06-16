@@ -44,7 +44,7 @@ from overcooked_v2_experiments.ttappo_v3_memory.utils.visualize_ppo import (
 
 
 EPS = 1e-8
-FORWARD_CHUNK_SIZE = 8192
+FORWARD_CHUNK_SIZE = int(os.environ.get("ZSC_FORWARD_CHUNK_SIZE", "8192"))
 COMPATIBILITY_SAMPLE_LIMIT = 512
 
 
@@ -767,8 +767,10 @@ def summarize_method(
         eval_mode=eval_mode,
     )
     if config["model"]["TYPE"] != "CNN":
-        raise ValueError(
-            f"{method_name} is configured as {config['model']['TYPE']}, expected CNN"
+        print(
+            f"[zsc_diagnostics] warning: {method_name} is configured as "
+            f"{config['model']['TYPE']}; policy-distribution diagnostics use "
+            "reset hidden states and should be interpreted as auxiliary readouts."
         )
 
     env = build_env(config, layout_override=layout)
@@ -936,6 +938,10 @@ def main():
     parser.add_argument("--comparison_backend", type=str, default="ppo")
     parser.add_argument("--baseline_eval_mode", type=str, default="memory_off")
     parser.add_argument("--comparison_eval_mode", type=str, default="memory_off")
+    parser.add_argument("--single_run_dir", type=str)
+    parser.add_argument("--single_name", type=str, default="method")
+    parser.add_argument("--single_backend", type=str, default="ppo")
+    parser.add_argument("--single_eval_mode", type=str, default="memory_off")
     parser.add_argument("--standard_run_dir", type=str)
     parser.add_argument("--state_aug_run_dir", type=str)
     parser.add_argument("--layout", type=str, default="counter_circuit")
@@ -960,7 +966,16 @@ def main():
         output_dir = Path("runs") / f"ppo_zsc_diagnostics_{stamp}"
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    if args.baseline_run_dir and args.comparison_run_dir:
+    if args.single_run_dir:
+        method_specs = [
+            {
+                "method_name": args.single_name,
+                "run_dir": args.single_run_dir,
+                "backend": args.single_backend,
+                "eval_mode": args.single_eval_mode,
+            },
+        ]
+    elif args.baseline_run_dir and args.comparison_run_dir:
         method_specs = [
             {
                 "method_name": args.baseline_name,
@@ -992,7 +1007,7 @@ def main():
         ]
     else:
         raise ValueError(
-            "Provide either baseline/comparison run dirs or legacy standard/state_aug run dirs."
+            "Provide single_run_dir, baseline/comparison run dirs, or legacy standard/state_aug run dirs."
         )
 
     summaries = [

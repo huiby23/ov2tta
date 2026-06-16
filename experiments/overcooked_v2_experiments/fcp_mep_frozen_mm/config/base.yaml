@@ -1,0 +1,23 @@
+defaults:
+  # - env: default
+  - wandb: default
+  - model: cnn
+
+SEED: 42
+NUM_SEEDS: 10
+TUNE: False
+NUM_CHECKPOINTS: 3
+VISUALIZE: False
+
+# NUM_ITERATIONS: 10
+
+
+FCP_MEP_FROZEN_MM:
+  POPULATION_SIZE: 10
+  POPULATION_RUN_DIR: runs/figure4_standard/20260403-114253_lhan2u0o_counter_circuit_avs-full
+  POPULATION_CHECKPOINT: final
+  GROUP_MM: 1
+  GROUP_MP: 1
+  STATE_AUG_INCLUDE_PARTNERS: True
+  STATE_AUG_NUM_ROLLOUTS: 10
+  STATE_AUG_STEP_SIZE: 10

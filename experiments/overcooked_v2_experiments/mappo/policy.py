@@ -108,8 +108,8 @@ class MAPPOPolicy(AbstractPolicy):
         return initialize_carry(self.config, batch_size)
 
 
-def policy_checkoints_to_policy_pairing(checkpoints: MAPPOParams, config):
+def policy_checkoints_to_policy_pairing(checkpoints: MAPPOParams, config, stochastic: bool = True):
     policies = []
     for checkpoint in checkpoints:
-        policies.append(MAPPOPolicy(checkpoint.params, config))
+        policies.append(MAPPOPolicy(checkpoint.params, config, stochastic=stochastic))
     return PolicyPairing(*policies)

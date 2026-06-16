@@ -108,6 +108,10 @@ class Transition:
     avail_actions: chex.Array
     q_vals: chex.Array
 
+def _manager_state(env_state):
+    return getattr(env_state, "env_state", env_state)
+
+
 class CustomTrainState(TrainState):
     batch_stats: Any
     timesteps: int = 0
@@ -245,7 +249,7 @@ def make_train(config, env):
                 )  # (num_agents, num_envs, num_actions)
 
                 # explore
-                avail_actions = wrapped_env.get_valid_actions(env_state.env_state)
+                avail_actions = wrapped_env.get_valid_actions(_manager_state(env_state))
 
                 eps = eps_scheduler(train_state.n_updates)
                 _rngs = jax.random.split(rng_a, env.num_agents)
@@ -269,7 +273,7 @@ def make_train(config, env):
 
                 # get the next available action
                 next_avail_actions = wrapped_env.get_valid_actions(
-                    new_env_state.env_state
+                    _manager_state(new_env_state)
                 )
 
                 transition = Transition(
@@ -311,7 +315,7 @@ def make_train(config, env):
                 False,
             )  # (num_agents, num_envs, num_actions)
             unavail_actions = 1 - batchify(
-                wrapped_env.get_valid_actions(env_state.env_state)
+                wrapped_env.get_valid_actions(_manager_state(env_state))
             )
             last_q = last_q - (unavail_actions * 1e10)
             last_q = jnp.max(last_q, axis=-1)  # (num_agents, num_envs)
@@ -506,7 +510,7 @@ def make_train(config, env):
                     },
                     _obs,
                 )
-                valid_actions = test_env.get_valid_actions(env_state.env_state)
+                valid_actions = test_env.get_valid_actions(_manager_state(env_state))
                 actions = get_greedy_actions(q_vals, batchify(valid_actions))
                 actions = unbatchify(actions)
                 obs, env_state, rewards, dones, infos = test_env.batch_step(
@@ -565,6 +569,11 @@ def env_from_config(config):
         env_name = f"{config['ENV_NAME']}_{config['MAP_NAME']}"
         env = make(config["ENV_NAME"], **config["ENV_KWARGS"])
         env = SMAXLogWrapper(env)
+    # overcooked_v2 accepts a layout name directly; old overcooked expects a Layout object.
+    elif "overcooked_v2" in env_name.lower():
+        env_name = f"{config['ENV_NAME']}_{config['ENV_KWARGS']['layout']}"
+        env = make(config["ENV_NAME"], **config["ENV_KWARGS"])
+        env = LogWrapper(env)
     # overcooked needs a layout
     elif "overcooked" in env_name.lower():
         env_name = f"{config['ENV_NAME']}_{config['ENV_KWARGS']['layout']}"

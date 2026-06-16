@@ -1,0 +1,51 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "${ROOT}"
+PYTHON="${PYTHON:-/root/miniconda3/envs/myconda/bin/python}"
+source "${ROOT}/experiments/repro_env.sh"
+
+LAYOUT="${LAYOUT:-counter_circuit}"
+SEED="${SEED:-42}"
+NUM_SEEDS="${NUM_SEEDS:-10}"
+POPULATION_SIZE="${POPULATION_SIZE:-5}"
+MEP_ENT_COEF="${MEP_ENT_COEF:-0.1}"
+MEP_GROUP_MM="${MEP_GROUP_MM:-1}"
+MEP_GROUP_MP="${MEP_GROUP_MP:-1}"
+TOTAL_TIMESTEPS="${TOTAL_TIMESTEPS:-10000000}"
+REW_SHAPING_HORIZON="${REW_SHAPING_HORIZON:-5000000}"
+NUM_ENVS="${NUM_ENVS:-64}"
+NUM_STEPS="${NUM_STEPS:-256}"
+UPDATE_EPOCHS="${UPDATE_EPOCHS:-4}"
+NUM_MINIBATCHES="${NUM_MINIBATCHES:-16}"
+WANDB_MODE="${WANDB_MODE:-online}"
+WANDB_ENTITY="${WANDB_ENTITY:-huiby_tsinghua23}"
+WANDB_PROJECT="${WANDB_PROJECT:-ov2-paper-repro}"
+PREFIX="${PREFIX:-mep_realpop_mm${MEP_GROUP_MM}_mp${MEP_GROUP_MP}_K${POPULATION_SIZE}_ent${MEP_ENT_COEF}_${NUM_ENVS}_${NUM_MINIBATCHES}_${TOTAL_TIMESTEPS}}"
+
+print_repro_env
+PYTHONUNBUFFERED=1 PYTHONPATH="${ROOT}/experiments:${ROOT}/JaxMARL:${PYTHONPATH:-}" \
+XLA_PYTHON_CLIENT_PREALLOCATE="${XLA_PYTHON_CLIENT_PREALLOCATE:-false}" \
+"${PYTHON}" -m overcooked_v2_experiments.mep.main \
+  +experiment=cnn \
+  +env=original \
+  env.ENV_KWARGS.layout="${LAYOUT}" \
+  SEED="${SEED}" \
+  NUM_SEEDS="${NUM_SEEDS}" \
+  NUM_CHECKPOINTS=3 \
+  VISUALIZE=False \
+  +OPTIONAL_PREFIX="${PREFIX}" \
+  wandb.ENTITY="${WANDB_ENTITY}" \
+  wandb.PROJECT="${WANDB_PROJECT}" \
+  wandb.WANDB_MODE="${WANDB_MODE}" \
+  model.TOTAL_TIMESTEPS="${TOTAL_TIMESTEPS}" \
+  model.REW_SHAPING_HORIZON="${REW_SHAPING_HORIZON}" \
+  model.NUM_ENVS="${NUM_ENVS}" \
+  model.NUM_STEPS="${NUM_STEPS}" \
+  model.UPDATE_EPOCHS="${UPDATE_EPOCHS}" \
+  model.NUM_MINIBATCHES="${NUM_MINIBATCHES}" \
+  MEP.POPULATION_SIZE="${POPULATION_SIZE}" \
+  MEP.ENT_COEF="${MEP_ENT_COEF}" \
+  MEP.GROUP_MM="${MEP_GROUP_MM}" \
+  MEP.GROUP_MP="${MEP_GROUP_MP}"

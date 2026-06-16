@@ -15,7 +15,7 @@ class ActorCriticCNN(ActorCriticBase):
     def __call__(self, hidden, x):
         obs, done = x
 
-        print("obs shape", obs.shape)
+        # Debug shape print disabled for diagnostics throughput.
 
         if self.config["ACTIVATION"] == "relu":
             activation = nn.relu

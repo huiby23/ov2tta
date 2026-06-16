@@ -108,6 +108,55 @@ def get_rollout(policies: PolicyPairing, env, key) -> PolicyRollout:
     )
 
 
+def get_rollout_reward_only(policies: PolicyPairing, env, key) -> chex.Scalar:
+    init_hstate, _get_actions = init_rollout(policies, env)
+
+    @jax.jit
+    def _perform_step(carry, key):
+        obs, state, done, total_reward, hstate = carry
+
+        key_sample, key_step = jax.random.split(key, 2)
+        actions, next_hstate = _get_actions(obs, done, hstate, key_sample)
+
+        next_obs, next_state, reward, next_done, _info = env.step(
+            key_step, state, actions
+        )
+
+        if env.num_agents == 2:
+            updated_hstate = {}
+            for i, policy in enumerate(policies):
+                agent_id = f"agent_{i}"
+                partner_id = f"agent_{1 - i}"
+                updated_hstate[agent_id] = policy.update_after_step(
+                    next_hstate[agent_id],
+                    obs[partner_id],
+                    actions[partner_id],
+                    next_done[agent_id],
+                )
+        else:
+            updated_hstate = next_hstate
+
+        carry = (
+            next_obs,
+            next_state,
+            next_done,
+            total_reward + reward["agent_0"],
+            updated_hstate,
+        )
+        return carry, None
+
+    key, key_r = jax.random.split(key, 2)
+    obs, state = env.reset(key_r)
+
+    init_done = {f"agent_{i}": False for i in range(env.num_agents)}
+    init_done["__all__"] = False
+
+    keys = jax.random.split(key, env.max_steps)
+    carry = (obs, state, init_done, 0.0, init_hstate)
+    carry, _ = jax.lax.scan(_perform_step, carry, keys)
+    return carry[-2]
+
+
 def get_rollout_with_observations(
     policies: PolicyPairing, env, key
 ) -> DiagnosticRollout:
@@ -205,6 +254,10 @@ def get_rollout_functional(policies: FunctionalPolicyPairing, env, key) -> Polic
         from overcooked_v2_experiments.ttappo_v4_actor_adapter.policy import (
             get_functional_rollout,
         )
+
+        return get_functional_rollout(policies, env, key)
+    if policies.backend == "acp":
+        from overcooked_v2_experiments.acp.policy import get_functional_rollout
 
         return get_functional_rollout(policies, env, key)
 

@@ -510,7 +510,10 @@ class OvercookedV2(MultiAgentEnv):
             match obs_type:
                 case ObservationType.DEFAULT:
                     num_ingredients = self.layout.num_ingredients
-                    num_layers = 18 + 4 * (num_ingredients + 2)
+                    # Keep this in sync with get_obs_default():
+                    # self agent (7+n), other agents (7+n), static (6),
+                    # ingredient piles (n), world ingredients (2+n), recipe (2+n), extra (1).
+                    num_layers = 25 + 5 * num_ingredients
 
                     if self.indicate_successful_delivery:
                         num_layers += 1

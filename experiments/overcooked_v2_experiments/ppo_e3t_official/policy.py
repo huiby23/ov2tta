@@ -44,6 +44,10 @@ class PPOPolicy(AbstractPolicy):
         return self.config["model"] if "model" in self.config else self.config
 
     def _use_history_context(self):
+        # RNN checkpoints use the plain PPO recurrent network interface `(obs, done)`.
+        # E3T history context is only valid for the E3T CNN module.
+        if str(self._model_config().get("TYPE", "cnn")).lower() == "rnn":
+            return False
         return self._model_config().get("USE_HISTORY_CONTEXT", True)
 
     def _context_length(self):
@@ -51,6 +55,9 @@ class PPOPolicy(AbstractPolicy):
 
     def _stay_action(self):
         return int(self._model_config().get("STAY_ACTION", 4))
+
+    def _history_perturbation(self):
+        return str(self._model_config().get("E3T_HISTORY_PERTURBATION", "none")).lower()
 
     def _new_history_state(self, obs):
         obs = jnp.asarray(obs, dtype=jnp.float32)
@@ -174,6 +181,20 @@ class PPOPolicy(AbstractPolicy):
         if self_obs is None:
             return hstate
         hstate = self._ensure_history_state(self_obs, hstate)
+
+        perturbation = self._history_perturbation()
+        if perturbation in ("freeze", "no_update"):
+            return self._ensure_history_state(self_obs, hstate, done)
+        if perturbation in ("stay", "zero", "zero_action", "constant_stay"):
+            partner_action = jnp.full_like(
+                jnp.asarray(partner_action, dtype=jnp.int32), self._stay_action()
+            )
+        elif perturbation in ("shift", "cyclic_shift", "wrong"):
+            action_dim = int(self._model_config().get("ACTION_DIM", 6))
+            partner_action = (jnp.asarray(partner_action, dtype=jnp.int32) + 1) % action_dim
+        elif perturbation not in ("none", "normal", ""):
+            raise ValueError(f"Unknown E3T_HISTORY_PERTURBATION={perturbation}")
+
         next_obs = jnp.concatenate(
             [hstate.history_obs[1:], jnp.asarray(self_obs, dtype=jnp.float32)[jnp.newaxis, ...]],
             axis=0,

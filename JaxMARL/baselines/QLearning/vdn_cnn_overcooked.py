@@ -85,6 +85,10 @@ class Timestep:
     dones: dict
 
 
+def _manager_state(env_state):
+    return getattr(env_state, "env_state", env_state)
+
+
 class CustomTrainState(TrainState):
     target_network_params: Any
     timesteps: int = 0
@@ -216,7 +220,7 @@ def make_train(config, env):
         _obs, _, _rewards, _dones, _infos = wrapped_env.batch_step(
             _rng, _env_state, _actions
         )
-        _avail_actions = wrapped_env.get_valid_actions(_env_state.env_state)
+        _avail_actions = wrapped_env.get_valid_actions(_manager_state(_env_state))
         _timestep = Timestep(
             obs=_obs,
             actions=_actions,
@@ -244,7 +248,7 @@ def make_train(config, env):
                 )  # (num_agents, num_envs, num_actions)
 
                 # explore
-                avail_actions = wrapped_env.get_valid_actions(env_state.env_state)
+                avail_actions = wrapped_env.get_valid_actions(_manager_state(env_state))
 
                 eps = eps_scheduler(train_state.n_updates)
                 _rngs = jax.random.split(rng_a, env.num_agents)
@@ -486,6 +490,11 @@ def env_from_config(config):
         env_name = f"{config['ENV_NAME']}_{config['MAP_NAME']}"
         env = make(config["ENV_NAME"], **config["ENV_KWARGS"])
         env = SMAXLogWrapper(env)
+    # overcooked_v2 accepts a layout name directly; old overcooked expects a Layout object.
+    elif "overcooked_v2" in env_name.lower():
+        env_name = f"{config['ENV_NAME']}_{config['ENV_KWARGS']['layout']}"
+        env = make(config["ENV_NAME"], **config["ENV_KWARGS"])
+        env = LogWrapper(env)
     # overcooked needs a layout
     elif "overcooked" in env_name.lower():
         env_name = f"{config['ENV_NAME']}_{config['ENV_KWARGS']['layout']}"

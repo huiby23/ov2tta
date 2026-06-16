@@ -25,14 +25,19 @@ sys.path.append(os.path.dirname(os.path.dirname(DIR)))
 
 from .policy import AbstractPolicy, PolicyPairing, FunctionalPolicyPairing
 from .rollout import get_rollout
+from .rollout import get_rollout_reward_only
 from .rollout import get_rollout_functional
-from .rollout import get_rollout
 from .utils import get_recipe_identifier
 
 
 @chex.dataclass
 class PolicyVizualization:
     frame_seq: chex.Array
+    total_reward: chex.Scalar
+
+
+@chex.dataclass
+class RewardOnlyRollout:
     total_reward: chex.Scalar
 
 
@@ -106,6 +111,14 @@ def eval_pairing(
             _layout.possible_recipes = [recipe]
             env = OvercookedV2(layout=_layout, **env_kwargs)
 
+            if no_viz and not isinstance(policies, FunctionalPolicyPairing):
+                return RewardOnlyRollout(
+                    total_reward=get_rollout_reward_only(policies, env, key)
+                )
+            if no_viz and not isinstance(policies, FunctionalPolicyPairing):
+                return RewardOnlyRollout(
+                    total_reward=get_rollout_reward_only(policies, env, key)
+                )
             if isinstance(policies, FunctionalPolicyPairing):
                 rollout = get_rollout_functional(policies, env, key)
             else:
@@ -122,6 +135,10 @@ def eval_pairing(
         env = OvercookedV2(layout=layout_name, **env_kwargs)
 
         def _rollout_seed(key):
+            if no_viz and not isinstance(policies, FunctionalPolicyPairing):
+                return RewardOnlyRollout(
+                    total_reward=get_rollout_reward_only(policies, env, key)
+                )
             if isinstance(policies, FunctionalPolicyPairing):
                 return get_rollout_functional(policies, env, key)
             return get_rollout(policies, env, key)

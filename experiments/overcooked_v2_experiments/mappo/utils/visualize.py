@@ -60,6 +60,8 @@ def visualize_mappo_policy(
     cross=False,
     no_viz=False,
     pairing_policy=None,
+    greedy=False,
+    output_tag=None,
 ):
     if cross and not final_only:
         raise ValueError("Cannot run cross play with all checkpoints")
@@ -104,7 +106,7 @@ def visualize_mappo_policy(
     def _policy_viz(pairing):
         env_kwargs_no_layout = copy.deepcopy(env_kwargs)
         layout_name = env_kwargs_no_layout.pop("layout")
-        pairing = policy_checkoints_to_policy_pairing(pairing, config)
+        pairing = policy_checkoints_to_policy_pairing(pairing, config, stochastic=not greedy)
         return eval_pairing(
             pairing,
             layout_name,
@@ -147,7 +149,8 @@ def visualize_mappo_policy(
                 checkpoint_sum += total_reward
                 rows.append([first_level, second_level, annotation, total_reward])
 
-    summery_name = "reward_summary_cross.csv" if cross else "reward_summary_sp.csv"
+    tag_suffix = f"_{output_tag}" if output_tag else ""
+    summery_name = f"reward_summary_cross{tag_suffix}.csv" if cross else f"reward_summary_sp{tag_suffix}.csv"
     summery_file = run_base_dir / summery_name
     with open(summery_file, "w", newline="") as csvfile:
         writer = csv.writer(csvfile)
@@ -169,7 +172,9 @@ if __name__ == "__main__":
     parser.add_argument("--all", action="store_true")
     parser.add_argument("--no_viz", action="store_true")
     parser.add_argument("--no_reset", action="store_true")
+    parser.add_argument("--output_tag", type=str, default=None)
     parser.add_argument("--pairing_policy", type=int)
+    parser.add_argument("--greedy", action="store_true", help="Use argmax actions during evaluation instead of sampling.")
     args = parser.parse_args()
 
     directory = args.d
@@ -202,4 +207,6 @@ if __name__ == "__main__":
             no_viz=args.no_viz,
             extra_env_kwargs=extra_env_kwargs,
             pairing_policy=args.pairing_policy,
+            output_tag=args.output_tag,
+            greedy=args.greedy,
         )

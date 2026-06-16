@@ -1,0 +1,78 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="${ROOT:-/teams/ius_1663576043/hby/rl/ov2}"
+PYTHON="${PYTHON:-/root/miniconda3/envs/myconda/bin/python}"
+TS="${TS:-$(date +%Y%m%d_%H%M%S)}"
+
+if [ -f "${ROOT}/experiments/repro_env.sh" ]; then
+  # shellcheck disable=SC1091
+  source "${ROOT}/experiments/repro_env.sh"
+fi
+
+export PYTHONPATH="${ROOT}/experiments:${ROOT}/JaxMARL:${PYTHONPATH:-}"
+export XLA_PYTHON_CLIENT_PREALLOCATE="${XLA_PYTHON_CLIENT_PREALLOCATE:-false}"
+
+LAYOUT="${LAYOUT:-counter_circuit}"
+SEED="${SEED:-42}"
+NUM_SEEDS="${NUM_SEEDS:-10}"
+TOTAL_TIMESTEPS="${TOTAL_TIMESTEPS:-10000000}"
+NUM_ENVS="${NUM_ENVS:-64}"
+NUM_STEPS="${NUM_STEPS:-256}"
+UPDATE_EPOCHS="${UPDATE_EPOCHS:-4}"
+NUM_MINIBATCHES="${NUM_MINIBATCHES:-16}"
+REW_SHAPING_HORIZON="${REW_SHAPING_HORIZON:-10000000}"
+WANDB_ENTITY="${WANDB_ENTITY:-huiby_tsinghua23}"
+WANDB_PROJECT="${WANDB_PROJECT:-ov2-paper-repro}"
+WANDB_MODE="${WANDB_MODE:-online}"
+POPULATION_MIX_PROB="${POPULATION_MIX_PROB:-0.25}"
+PRIORITY_MODE="${PRIORITY_MODE:-high_return}"
+PRIORITY_EMA_ALPHA="${PRIORITY_EMA_ALPHA:-0.05}"
+PRIORITY_TEMPERATURE="${PRIORITY_TEMPERATURE:-40.0}"
+PRIORITY_UNIFORM_MIX="${PRIORITY_UNIFORM_MIX:-0.1}"
+
+VAE_CHECKPOINT="${VAE_CHECKPOINT:-${ROOT}/runs/talents_full_20260525_152903/vae/gamma_vae.pkl}"
+CLUSTER_CHECKPOINT="${CLUSTER_CHECKPOINT:-${ROOT}/runs/talents_full_20260525_152903/clusters/talents_clusters.pkl}"
+
+if [ ! -f "${VAE_CHECKPOINT}" ]; then
+  echo "VAE_CHECKPOINT does not exist: ${VAE_CHECKPOINT}" >&2
+  exit 2
+fi
+if [ ! -f "${CLUSTER_CHECKPOINT}" ]; then
+  echo "CLUSTER_CHECKPOINT does not exist: ${CLUSTER_CHECKPOINT}" >&2
+  exit 2
+fi
+
+K="$("${PYTHON}" -c 'import pickle, sys; print(pickle.load(open(sys.argv[1], "rb"))["num_clusters"])' "${CLUSTER_CHECKPOINT}")"
+RUN_PREFIX="talents_mix25_priority_${PRIORITY_MODE}_cnn_standard_${NUM_ENVS}_${NUM_MINIBATCHES}_${TOTAL_TIMESTEPS}_${TS}"
+
+echo "[TALENTS priority] vae=${VAE_CHECKPOINT}"
+echo "[TALENTS priority] clusters=${CLUSTER_CHECKPOINT}"
+echo "[TALENTS priority] k=${K}"
+echo "[TALENTS priority] mix=${POPULATION_MIX_PROB} priority=${PRIORITY_MODE}"
+
+"${PYTHON}" -m overcooked_v2_experiments.talents.main \
+  +experiment=cnn +env=original \
+  env.ENV_KWARGS.layout="${LAYOUT}" \
+  SEED="${SEED}" NUM_SEEDS="${NUM_SEEDS}" NUM_CHECKPOINTS=3 VISUALIZE=False \
+  +OPTIONAL_PREFIX="${RUN_PREFIX}" \
+  wandb.ENTITY="${WANDB_ENTITY}" wandb.PROJECT="${WANDB_PROJECT}" wandb.WANDB_MODE="${WANDB_MODE}" \
+  TALENTS.VAE_CHECKPOINT="${VAE_CHECKPOINT}" \
+  TALENTS.CLUSTER_CHECKPOINT="${CLUSTER_CHECKPOINT}" \
+  TALENTS.NUM_CLUSTERS="${K}" \
+  TALENTS.FIXED_SHARE_ALPHA="${TALENTS_FIXED_SHARE_ALPHA:-0.4}" \
+  TALENTS.FIXED_SHARE_ETA="${TALENTS_FIXED_SHARE_ETA:-0.2}" \
+  TALENTS.REGRET_CLIP="${TALENTS_REGRET_CLIP:-1.0}" \
+  TALENTS.PRIORITY_SAMPLING=True \
+  TALENTS.PRIORITY_MODE="${PRIORITY_MODE}" \
+  TALENTS.PRIORITY_EMA_ALPHA="${PRIORITY_EMA_ALPHA}" \
+  TALENTS.PRIORITY_TEMPERATURE="${PRIORITY_TEMPERATURE}" \
+  TALENTS.PRIORITY_UNIFORM_MIX="${PRIORITY_UNIFORM_MIX}" \
+  model.NUM_STRATEGY_CLUSTERS="${K}" \
+  model.TOTAL_TIMESTEPS="${TOTAL_TIMESTEPS}" \
+  model.REW_SHAPING_HORIZON="${REW_SHAPING_HORIZON}" \
+  model.NUM_ENVS="${NUM_ENVS}" \
+  model.NUM_STEPS="${NUM_STEPS}" \
+  model.UPDATE_EPOCHS="${UPDATE_EPOCHS}" \
+  model.NUM_MINIBATCHES="${NUM_MINIBATCHES}" \
+  +POPULATION_MIX_PROB="${POPULATION_MIX_PROB}"

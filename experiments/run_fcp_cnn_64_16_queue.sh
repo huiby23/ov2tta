@@ -93,7 +93,7 @@ prepare_population() {
         echo "[fcp-cnn] missing checkpoint ${src}/ckpt_final" >&2
         exit 1
       fi
-      ln -s "${src}" "${dst}"
+      cp -a "${src}" "${dst}"
     done
   done
   echo "[fcp-cnn] population_ready dir=${POPULATION_DIR} groups=${POPULATION_GROUPS} size=${POPULATION_SIZE} source=${SOURCE_RUN_DIR}"

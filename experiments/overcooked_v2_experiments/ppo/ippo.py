@@ -151,6 +151,15 @@ def make_train(
     print("train_mask_flat", train_mask_flat.shape)
     print("train_mask_flat sum", train_mask_flat.sum())
 
+    def _make_population_train_mask(population_env_mask):
+        full_population_mask = jnp.tile(population_env_mask, env.num_agents)
+        return jnp.where(full_population_mask, train_mask_flat, True)
+
+    use_population_mixing = "POPULATION_MIX_PROB" in config
+    population_mix_prob = float(config.get("POPULATION_MIX_PROB", 1.0))
+    if use_population_mixing:
+        print("Using population mixing with prob", population_mix_prob)
+
     use_population_annealing = False
     if "POPULATION_ANNEAL_HORIZON" in config:
         print("Using population annealing")
@@ -261,14 +270,19 @@ def make_train(
                         rng, (model_config["NUM_ENVS"],)
                     ) < population_annealing_schedule(step)
 
-                def _make_train_mask(annealing_mask):
-                    full_anneal_mask = jnp.tile(annealing_mask, env.num_agents)
-                    return jnp.where(full_anneal_mask, train_mask_flat, True)
-
                 rng, _rng = jax.random.split(rng)
                 init_population_annealing_mask = _sample_population_annealing_mask(
                     0, _rng
                 )
+            elif use_population_mixing:
+
+                def _sample_population_mix_mask(rng):
+                    return jax.random.uniform(
+                        rng, (model_config["NUM_ENVS"],)
+                    ) < population_mix_prob
+
+                rng, _rng = jax.random.split(rng)
+                init_population_annealing_mask = _sample_population_mix_mask(_rng)
 
         # TRAIN LOOP
         def _update_step(runner_state, unused):
@@ -331,7 +345,9 @@ def make_train(
                     print("Using population")
 
                     obs_population = obs_batch
-                    if isinstance(population, AbstractPolicy):
+                    if isinstance(population, AbstractPolicy) and not getattr(
+                        population, "uses_default_observation", False
+                    ):
                         obs_featurized = jax.vmap(
                             env.get_obs_for_type, in_axes=(0, None)
                         )(env_state.env_state, ObservationType.FEATURIZED)
@@ -376,8 +392,10 @@ def make_train(
                         )
 
                     action_pick_mask = train_mask_flat
-                    if use_population_annealing:
-                        action_pick_mask = _make_train_mask(population_annealing_mask)
+                    if use_population_annealing or use_population_mixing:
+                        action_pick_mask = _make_population_train_mask(
+                            population_annealing_mask
+                        )
 
                     # use action_pick_mask to select the action from the population or the network
                     action = jnp.where(action_pick_mask, action, pop_actions)
@@ -432,6 +450,13 @@ def make_train(
                     new_population_annealing_mask = jnp.where(
                         done["__all__"],
                         _sample_population_annealing_mask(env_steps, _rng),
+                        population_annealing_mask,
+                    )
+                elif use_population_mixing:
+                    rng, _rng = jax.random.split(rng)
+                    new_population_annealing_mask = jnp.where(
+                        done["__all__"],
+                        _sample_population_mix_mask(_rng),
                         population_annealing_mask,
                     )
                 else:
