@@ -86,6 +86,50 @@ class RNNQNetwork(nn.Module):
         return hidden, q_vals
 
 
+class CNN(nn.Module):
+    activation: str = "relu"
+
+    @nn.compact
+    def __call__(self, x):
+        activation = nn.relu if self.activation == "relu" else nn.tanh
+        x = nn.Conv(features=32, kernel_size=(5, 5))(x)
+        x = activation(x)
+        x = nn.Conv(features=32, kernel_size=(3, 3))(x)
+        x = activation(x)
+        x = nn.Conv(features=32, kernel_size=(3, 3))(x)
+        x = activation(x)
+        x = x.reshape((x.shape[0], -1))
+        x = nn.Dense(features=64)(x)
+        return activation(x)
+
+
+class CNNRNNQNetwork(nn.Module):
+    action_dim: int
+    hidden_dim: int
+    init_scale: float = 1.0
+
+    @nn.compact
+    def __call__(self, hidden, obs, dones):
+        time_steps, batch_size = obs.shape[:2]
+        x = obs.reshape((time_steps * batch_size, *obs.shape[2:]))
+        embedding = CNN()(x)
+        embedding = embedding.reshape((time_steps, batch_size, -1))
+        embedding = nn.Dense(
+            self.hidden_dim,
+            kernel_init=orthogonal(self.init_scale),
+            bias_init=constant(0.0),
+        )(embedding)
+        embedding = nn.relu(embedding)
+
+        hidden, embedding = ScannedRNN()(hidden, (embedding, dones))
+        q_vals = nn.Dense(
+            self.action_dim,
+            kernel_init=orthogonal(self.init_scale),
+            bias_init=constant(0.0),
+        )(embedding)
+        return hidden, q_vals
+
+
 class HyperNetwork(nn.Module):
     """HyperNetwork for generating weights of QMix' mixing network."""
 
@@ -183,6 +227,11 @@ def make_train(config, env):
         end_value=config["EPS_FINISH"],
         transition_steps=config["EPS_DECAY"] * config["NUM_UPDATES"],
     )
+    rew_shaping_anneal = optax.linear_schedule(
+        init_value=1.0,
+        end_value=0.0,
+        transition_steps=max(1, int(config.get("REW_SHAPING_HORIZON", 0))),
+    )
 
     def get_greedy_actions(q_vals, valid_actions):
         unavail_actions = 1 - valid_actions
@@ -228,9 +277,15 @@ def make_train(config, env):
         # INIT ENV
         original_seed = rng[0]
         rng, _rng = jax.random.split(rng)
-        wrapped_env = CTRolloutManager(env, batch_size=config["NUM_ENVS"])
+        wrapped_env = CTRolloutManager(
+            env,
+            batch_size=config["NUM_ENVS"],
+            preprocess_obs=not config.get("USE_CNN", False),
+        )
         test_env = CTRolloutManager(
-            env, batch_size=config["TEST_NUM_ENVS"]
+            env,
+            batch_size=config["TEST_NUM_ENVS"],
+            preprocess_obs=not config.get("USE_CNN", False),
         )  # batched env for testing (has different batch size)
 
         # to initalize some variables is necessary to sample a trajectory to know its strucutre
@@ -265,10 +320,16 @@ def make_train(config, env):
         )  # remove the NUM_ENV dim
 
         # INIT NETWORK AND OPTIMIZER
-        network = RNNQNetwork(
-            action_dim=wrapped_env.max_action_space,
-            hidden_dim=config["HIDDEN_SIZE"],
-        )
+        if config.get("USE_CNN", False):
+            network = CNNRNNQNetwork(
+                action_dim=wrapped_env.max_action_space,
+                hidden_dim=config["HIDDEN_SIZE"],
+            )
+        else:
+            network = RNNQNetwork(
+                action_dim=wrapped_env.max_action_space,
+                hidden_dim=config["HIDDEN_SIZE"],
+            )
 
         mixer = MixingNetwork(
             config["MIXER_EMBEDDING_DIM"],
@@ -277,10 +338,9 @@ def make_train(config, env):
         )
 
         def create_agent(rng):
+            obs_shape = env.observation_space().shape if config.get("USE_CNN", False) else (wrapped_env.obs_size,)
             init_x = (
-                jnp.zeros(
-                    (1, 1, wrapped_env.obs_size)
-                ),  # (time_step, batch_size, obs_size)
+                jnp.zeros((1, 1, *obs_shape)),  # (time_step, batch_size, ...)
                 jnp.zeros((1, 1)),  # (time_step, batch size)
             )
             init_hs = ScannedRNN.initialize_carry(
@@ -329,7 +389,7 @@ def make_train(config, env):
             min_length_time_axis=config["BUFFER_BATCH_SIZE"],
             sample_batch_size=config["BUFFER_BATCH_SIZE"],
             add_batch_size=config["NUM_ENVS"],
-            sample_sequence_length=1,
+            sample_sequence_length=int(config.get("SAMPLE_SEQUENCE_LENGTH", config["NUM_STEPS"])),
             period=1,
         )
         buffer_state = buffer.init(sample_traj_unbatched)
@@ -337,7 +397,7 @@ def make_train(config, env):
         # TRAINING LOOP
         def _update_step(runner_state, unused):
 
-            train_state, buffer_state, test_state, rng = runner_state
+            train_state, buffer_state, expl_state, test_state, rng = runner_state
 
             # SAMPLE PHASE
             def _step_env(carry, _):
@@ -373,6 +433,14 @@ def make_train(config, env):
                 new_obs, new_env_state, rewards, dones, infos = wrapped_env.batch_step(
                     rng_s, env_state, actions
                 )
+                if config.get("REW_SHAPING_HORIZON", 0) > 0 and "shaped_reward" in infos:
+                    shaped_reward = infos.pop("shaped_reward")
+                    shaped_reward["__all__"] = batchify(shaped_reward).sum(axis=0)
+                    rewards = jax.tree.map(
+                        lambda x, y: x + y * rew_shaping_anneal(train_state.timesteps),
+                        rewards,
+                        shaped_reward,
+                    )
                 timestep = Timestep(
                     obs=last_obs,
                     actions=actions,
@@ -384,22 +452,13 @@ def make_train(config, env):
 
             # step the env (should be a complete rollout)
             rng, _rng = jax.random.split(rng)
-            init_obs, env_state = wrapped_env.batch_reset(_rng)
-            init_dones = {
-                agent: jnp.zeros((config["NUM_ENVS"]), dtype=bool)
-                for agent in env.agents + ["__all__"]
-            }
-            init_hs = ScannedRNN.initialize_carry(
-                config["HIDDEN_SIZE"], len(env.agents), config["NUM_ENVS"]
-            )
-            expl_state = (init_hs, init_obs, init_dones, env_state)
-            rng, _rng = jax.random.split(rng)
-            _, (timesteps, infos) = jax.lax.scan(
+            carry, (timesteps, infos) = jax.lax.scan(
                 _step_env,
                 (*expl_state, _rng),
                 None,
                 config["NUM_STEPS"],
             )
+            expl_state = carry[:4]
 
             train_state = train_state.replace(
                 timesteps=train_state.timesteps
@@ -571,7 +630,7 @@ def make_train(config, env):
 
                 jax.debug.callback(callback, metrics, original_seed)
 
-            runner_state = (train_state, buffer_state, test_state, rng)
+            runner_state = (train_state, buffer_state, expl_state, test_state, rng)
 
             return runner_state, None
 
@@ -640,7 +699,16 @@ def make_train(config, env):
 
         # train
         rng, _rng = jax.random.split(rng)
-        runner_state = (train_state, buffer_state, test_state, _rng)
+        init_obs, env_state = wrapped_env.batch_reset(_rng)
+        init_dones = {
+            agent: jnp.zeros((config["NUM_ENVS"]), dtype=bool)
+            for agent in env.agents + ["__all__"]
+        }
+        init_hs = ScannedRNN.initialize_carry(
+            config["HIDDEN_SIZE"], len(env.agents), config["NUM_ENVS"]
+        )
+        expl_state = (init_hs, init_obs, init_dones, env_state)
+        runner_state = (train_state, buffer_state, expl_state, test_state, _rng)
 
         runner_state, metrics = jax.lax.scan(
             _update_step, runner_state, None, config["NUM_UPDATES"]

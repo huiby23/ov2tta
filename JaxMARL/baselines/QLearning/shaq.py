@@ -404,6 +404,11 @@ def make_train(config, env):
             end_e=config["EPSILON_FINISH"],
             duration=config["EPSILON_ANNEAL_TIME"]
         )
+        rew_shaping_anneal = optax.linear_schedule(
+            init_value=1.0,
+            end_value=0.0,
+            transition_steps=max(1, int(config.get("REW_SHAPING_HORIZON", 0))),
+        )
 
         # depending if using parameters sharing or not, q-values are computed using one or multiple parameters
         if config["PARAMETERS_SHARING"]:
@@ -436,7 +441,7 @@ def make_train(config, env):
         # TRAINING LOOP
         def _update_step(runner_state, unused):
 
-            train_state_agent, train_state_mixer, target_network_params_agent, target_network_params_mixer, env_state, buffer_state, time_state, init_obs, init_dones, test_metrics, rng = runner_state
+            train_state_agent, train_state_mixer, target_network_params_agent, target_network_params_mixer, env_state, buffer_state, time_state, init_obs, init_dones, hstate, test_metrics, rng = runner_state
 
             # EPISODE STEP
             def _env_step(step_state, unused):
@@ -460,6 +465,17 @@ def make_train(config, env):
 
                 # STEP ENV
                 obs, env_state, rewards, dones, infos = wrapped_env.batch_step(key_s, env_state, actions)
+                if config.get("REW_SHAPING_HORIZON", 0) > 0 and "shaped_reward" in infos:
+                    shaped_reward = infos.pop("shaped_reward")
+                    shaped_reward["__all__"] = jnp.stack(
+                        [shaped_reward[agent] for agent in env.agents],
+                        axis=0,
+                    ).sum(axis=0)
+                    rewards = jax.tree.map(
+                        lambda x, y: x + y * rew_shaping_anneal(time_state["timesteps"]),
+                        rewards,
+                        shaped_reward,
+                    )
                 transition = Transition(last_obs, actions, rewards, dones, infos)
 
                 step_state = (params, env_state, obs, dones, hstate, rng, t+1)
@@ -468,11 +484,6 @@ def make_train(config, env):
 
             # prepare the step state and collect the episode trajectory
             rng, _rng = jax.random.split(rng)
-            if config["PARAMETERS_SHARING"]:
-                hstate = ScannedRNN.initialize_carry(config['AGENT_HIDDEN_DIM'], len(env.agents)*config["NUM_ENVS"]) # (n_agents*n_envs, hs_size)
-            else:
-                hstate = ScannedRNN.initialize_carry(config['AGENT_HIDDEN_DIM'], len(env.agents), config["NUM_ENVS"]) # (n_agents, n_envs, hs_size)
-
             step_state = (
                 train_state_agent.params,
                 env_state,
@@ -604,13 +615,11 @@ def make_train(config, env):
             train_state_mixer = train_state_mixer.apply_gradients(grads=grads_mixer)
 
 
-            # UPDATE THE VARIABLES AND RETURN
-            # reset the environment
-            rng, _rng = jax.random.split(rng)
-            init_obs, env_state = wrapped_env.batch_reset(_rng)
-            init_dones = {agent:jnp.zeros((config["NUM_ENVS"]), dtype=bool) for agent in env.agents+['__all__']}
-
             # update the states
+            env_state = step_state[1]
+            init_obs = step_state[2]
+            init_dones = step_state[3]
+            hstate = step_state[4]
             time_state['timesteps'] = step_state[-1]
             time_state['updates']   = time_state['updates'] + 1
 
@@ -676,6 +685,7 @@ def make_train(config, env):
                 time_state,
                 init_obs,
                 init_dones,
+                hstate,
                 test_metrics,
                 rng
             )
@@ -712,7 +722,10 @@ def make_train(config, env):
                 _rng,
             )
             step_state, (rewards, dones, infos) = jax.lax.scan(
-                _greedy_env_step, step_state, None, config["NUM_STEPS"]
+                _greedy_env_step,
+                step_state,
+                None,
+                config.get("TEST_NUM_STEPS", config["NUM_STEPS"]),
             )
             # compute the metrics of the first episode that is done for each parallel env
             def first_episode_returns(rewards, dones):
@@ -738,6 +751,10 @@ def make_train(config, env):
         }
         rng, _rng = jax.random.split(rng)
         test_metrics = get_greedy_metrics(_rng, train_state_agent.params, time_state) # initial greedy metrics
+        if config["PARAMETERS_SHARING"]:
+            hstate = ScannedRNN.initialize_carry(config['AGENT_HIDDEN_DIM'], len(env.agents)*config["NUM_ENVS"]) # (n_agents*n_envs, hs_size)
+        else:
+            hstate = ScannedRNN.initialize_carry(config['AGENT_HIDDEN_DIM'], len(env.agents), config["NUM_ENVS"]) # (n_agents, n_envs, hs_size)
 
         # train
         rng, _rng = jax.random.split(rng)
@@ -751,6 +768,7 @@ def make_train(config, env):
             time_state,
             init_obs,
             init_dones,
+            hstate,
             test_metrics,
             _rng
         )
